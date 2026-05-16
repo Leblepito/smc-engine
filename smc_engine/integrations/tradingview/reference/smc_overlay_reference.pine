@@ -1,0 +1,159 @@
+//@version=6
+// =============================================================================
+// SMC Engine — Canonical Pine v6 reference overlay
+// =============================================================================
+// Bu dosya MCP'siz kullanim icin FALLBACK / Claude'a ek context'tir.
+// TradingView Pine Editor'a yapistirilir, manuel olarak derlenir.
+//
+// Katmanlar:
+//   1) Range (RH / RL / EQ + premium/discount shading)
+//   2) Structure (4-bar confirmed swings -> BOS / CHoCH, close-confirmed)
+//   3) Order Blocks (Efloud: consecutive same-color + displacement)
+//   4) FVG (3-bar imbalance + fill ratio)
+//   5) Liquidity Sweep (EQH/EQL + sweep + reclaim)
+//   6) Alerts (M15 sweep+OB confluence -> alert())
+//
+// Pine v6 disiplini:
+//   - `ta.*` (ta.atr, ta.highest, ta.lowest) — bare isim YOK
+//   - `indicator(...)` — `study(...)` YOK
+//   - `var line`, `var box`, `var label` — persistent ciizimler
+//   - `alert(..., alert.freq_once_per_bar_close)` — runtime alerts
+// =============================================================================
+
+indicator(title="SMC Full Overlay (Efloud)", shorttitle="SMC", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// Inputs (snake_case — SMCConfig alanlariyla birebir eslesir)
+// -----------------------------------------------------------------------------
+swing_lookback        = input.int(4,    title="swing_lookback",        minval=1, group="Detector")
+ob_breakout_threshold = input.float(1.5, title="ob_breakout_threshold", minval=0.0, group="Detector")
+fvg_min_gap_atr       = input.float(0.3, title="fvg_min_gap_atr",       minval=0.0, group="Detector")
+equal_level_tolerance = input.float(0.001, title="equal_level_tolerance", minval=0.0, group="Detector")
+max_zone_age_bars     = input.int(200,  title="max_zone_age_bars",     minval=1, group="Detector")
+atr_period            = input.int(14,   title="atr_period",            minval=1, group="Detector")
+
+show_range     = input.bool(true,  title="Show range",     group="Layers")
+show_structure = input.bool(true,  title="Show structure", group="Layers")
+show_ob        = input.bool(true,  title="Show OBs",       group="Layers")
+show_fvg       = input.bool(true,  title="Show FVGs",      group="Layers")
+show_sweep     = input.bool(true,  title="Show sweeps",    group="Layers")
+enable_alerts  = input.bool(true,  title="Enable alerts",  group="Layers")
+
+c_premium = input.color(color.new(color.red,   85), title="Premium fill",  group="Colors")
+c_discount = input.color(color.new(color.green, 85), title="Discount fill", group="Colors")
+c_eq       = input.color(color.gray, title="EQ line", group="Colors")
+c_bull_ob  = input.color(color.new(color.green, 70), title="Demand OB",   group="Colors")
+c_bear_ob  = input.color(color.new(color.red,   70), title="Supply OB",   group="Colors")
+c_bull_fvg = input.color(color.new(color.green, 80), title="Bullish FVG", group="Colors")
+c_bear_fvg = input.color(color.new(color.red,   80), title="Bearish FVG", group="Colors")
+
+// -----------------------------------------------------------------------------
+// Shared: ATR
+// -----------------------------------------------------------------------------
+atr = ta.atr(atr_period)
+
+// -----------------------------------------------------------------------------
+// 1) Range — RH / RL / EQ + premium/discount shading
+// -----------------------------------------------------------------------------
+rh = ta.highest(high, swing_lookback * 10)
+rl = ta.lowest(low,   swing_lookback * 10)
+eq = (rh + rl) / 2.0
+
+var line rh_line = na
+var line rl_line = na
+var line eq_line = na
+var box  prem_box = na
+var box  disc_box = na
+
+if show_range and barstate.islast
+    line.delete(rh_line)
+    line.delete(rl_line)
+    line.delete(eq_line)
+    box.delete(prem_box)
+    box.delete(disc_box)
+    rh_line := line.new(x1=bar_index - 50, y1=rh, x2=bar_index + 10, y2=rh, color=color.red,   width=2, extend=extend.right)
+    rl_line := line.new(x1=bar_index - 50, y1=rl, x2=bar_index + 10, y2=rl, color=color.green, width=2, extend=extend.right)
+    eq_line := line.new(x1=bar_index - 50, y1=eq, x2=bar_index + 10, y2=eq, color=c_eq, style=line.style_dashed, width=1, extend=extend.right)
+    prem_box := box.new(left=bar_index - 50, top=rh, right=bar_index + 10, bottom=eq, bgcolor=c_premium,  border_color=na, extend=extend.right)
+    disc_box := box.new(left=bar_index - 50, top=eq, right=bar_index + 10, bottom=rl, bgcolor=c_discount, border_color=na, extend=extend.right)
+
+// -----------------------------------------------------------------------------
+// 2) Structure — 4-bar confirmed swings + close-confirmed BOS / CHoCH
+// -----------------------------------------------------------------------------
+swing_high = ta.pivothigh(high, swing_lookback, swing_lookback)
+swing_low  = ta.pivotlow (low,  swing_lookback, swing_lookback)
+
+var float last_swing_high = na
+var float last_swing_low  = na
+var int   bias = 0  // 1 bullish, -1 bearish, 0 neutral
+
+if not na(swing_high)
+    last_swing_high := swing_high
+if not na(swing_low)
+    last_swing_low := swing_low
+
+bos_up   = show_structure and not na(last_swing_high) and close > last_swing_high and bias >= 0
+bos_dn   = show_structure and not na(last_swing_low)  and close < last_swing_low  and bias <= 0
+choch_up = show_structure and not na(last_swing_high) and close > last_swing_high and bias < 0
+choch_dn = show_structure and not na(last_swing_low)  and close < last_swing_low  and bias > 0
+
+if bos_up
+    bias := 1
+    label.new(x=bar_index, y=high, text="BOS ↑", style=label.style_label_down, color=color.green, textcolor=color.white, size=size.small)
+if bos_dn
+    bias := -1
+    label.new(x=bar_index, y=low, text="BOS ↓", style=label.style_label_up, color=color.red, textcolor=color.white, size=size.small)
+if choch_up
+    bias := 1
+    label.new(x=bar_index, y=high, text="CHoCH ↑", style=label.style_label_down, color=color.lime, textcolor=color.black, size=size.small)
+if choch_dn
+    bias := -1
+    label.new(x=bar_index, y=low, text="CHoCH ↓", style=label.style_label_up, color=color.maroon, textcolor=color.white, size=size.small)
+
+// -----------------------------------------------------------------------------
+// 3) Order Blocks — consecutive same-color + displacement (Efloud)
+// -----------------------------------------------------------------------------
+displacement_up = close - open > ob_breakout_threshold * atr
+displacement_dn = open - close > ob_breakout_threshold * atr
+
+// Demand OB: onceki bar bearish, simdiki bar bullish displacement
+is_demand_ob = show_ob and displacement_up and close[1] < open[1]
+// Supply OB: onceki bar bullish, simdiki bar bearish displacement
+is_supply_ob = show_ob and displacement_dn and close[1] > open[1]
+
+if is_demand_ob
+    box.new(left=bar_index - 1, top=high[1], right=bar_index + max_zone_age_bars, bottom=low[1], bgcolor=c_bull_ob, border_color=color.green, extend=extend.none)
+if is_supply_ob
+    box.new(left=bar_index - 1, top=high[1], right=bar_index + max_zone_age_bars, bottom=low[1], bgcolor=c_bear_ob, border_color=color.red, extend=extend.none)
+
+// -----------------------------------------------------------------------------
+// 4) FVG — 3-bar imbalance + min-size filter (fvg_min_gap_atr * ATR)
+// -----------------------------------------------------------------------------
+bull_fvg = show_fvg and low > high[2] and (low - high[2]) > fvg_min_gap_atr * atr
+bear_fvg = show_fvg and high < low[2] and (low[2] - high) > fvg_min_gap_atr * atr
+
+if bull_fvg
+    box.new(left=bar_index - 2, top=low, right=bar_index + 30, bottom=high[2], bgcolor=c_bull_fvg, border_color=na)
+if bear_fvg
+    box.new(left=bar_index - 2, top=low[2], right=bar_index + 30, bottom=high, bgcolor=c_bear_fvg, border_color=na)
+
+// -----------------------------------------------------------------------------
+// 5) Liquidity Sweep — EQH/EQL + sweep + reclaim
+// -----------------------------------------------------------------------------
+recent_hi = ta.highest(high[1], swing_lookback * 5)
+recent_lo = ta.lowest(low[1],   swing_lookback * 5)
+
+sweep_up = show_sweep and high > recent_hi and close < recent_hi and math.abs(high - recent_hi) / recent_hi < equal_level_tolerance * 10
+sweep_dn = show_sweep and low  < recent_lo and close > recent_lo and math.abs(low  - recent_lo) / recent_lo < equal_level_tolerance * 10
+
+if sweep_up
+    label.new(x=bar_index, y=high, text="SWEEP ↑ (SELL-side liq)", style=label.style_label_down, color=color.orange, textcolor=color.black, size=size.tiny)
+if sweep_dn
+    label.new(x=bar_index, y=low, text="SWEEP ↓ (BUY-side liq)", style=label.style_label_up, color=color.aqua, textcolor=color.black, size=size.tiny)
+
+// -----------------------------------------------------------------------------
+// 6) Alerts — M15 sweep + reclaim confluence
+// -----------------------------------------------------------------------------
+if enable_alerts and (sweep_up or sweep_dn)
+    direction_str = sweep_up ? "SHORT bias (sell-side sweep)" : "LONG bias (buy-side sweep)"
+    alert("SMC sweep+reclaim on " + syminfo.ticker + " — " + direction_str, alert.freq_once_per_bar_close)

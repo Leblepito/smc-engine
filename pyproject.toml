@@ -1,0 +1,25 @@
+[project]
+name = "smc-engine"
+version = "0.1.0"
+description = "SMC (Smart Money Concepts) trade engine + backtest"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "ccxt>=4.0",
+    "pyarrow>=15.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-xdist>=3.0"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["smc_engine", "smc_engine.detectors", "backtest", "data"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
