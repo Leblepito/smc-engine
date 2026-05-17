@@ -101,8 +101,8 @@ def test_runner_emits_validated_setup_when_pipeline_returns_one(monkeypatch):
     assert payload is fake_validated
 
 
-def test_runner_htf_cache_reused_across_ticks(monkeypatch):
-    """HTF cache runner ömrü boyu RAM'de — analyze'a aynı cache obj geçirilir."""
+def test_runner_htf_cache_reused_across_ticks_for_same_symbol(monkeypatch):
+    """HTF cache runner ömrü boyu RAM'de — aynı sembol için aynı dict instance."""
     end_ts = datetime(2026, 5, 16, 14, 45)
     adapter = FakeAdapter(end_ts=end_ts)
     cfg = SMCConfig()
@@ -116,10 +116,31 @@ def test_runner_htf_cache_reused_across_ticks(monkeypatch):
     runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
     runner.run_once("BTCUSDT", now=end_ts + timedelta(minutes=15, seconds=5))
 
-    # analyze iki kez çağrıldı, ikisinde de cache aynı dict instance'ı
     cache_args = [call.kwargs.get("cache") for call in mock_analyze.call_args_list]
     assert cache_args[0] is cache_args[1]
     assert isinstance(cache_args[0], dict)
+
+
+def test_runner_htf_cache_isolated_across_symbols(monkeypatch):
+    """Cross-symbol kontaminasyon önleme: BTC ve ETH ayrı cache dict'leri.
+
+    Orchestrator cache key = (tf, ts) — sembolden bağımsız. Tek dict
+    paylaşılırsa BTC'nin D1 snapshot'ı ETH analizine sızar.
+    """
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    mock_analyze = MagicMock(return_value="picture")
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", mock_analyze)
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+    runner.run_once("ETHUSDT", now=end_ts + timedelta(seconds=5))
+
+    cache_args = [call.kwargs.get("cache") for call in mock_analyze.call_args_list]
+    assert cache_args[0] is not cache_args[1]
 
 
 def test_runner_adapter_error_logs_and_does_not_crash(monkeypatch, caplog):

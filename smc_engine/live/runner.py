@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional, Protocol
 
 from smc_engine.config import SMCConfig
@@ -47,7 +47,15 @@ class LiveRunner:
         self.config = config
         self.signal_logger = signal_logger
         # HTF cache runner ömrü boyu paylaşılır (Spec §7.1 + §13 trade-off #3).
-        self._htf_cache: dict = {}
+        # Per-symbol: orchestrator cache key = (tf, ts); sembolden bağımsız
+        # olduğu için tek dict tüm sembollere paylaşılırsa BTC'nin D1 zone'u
+        # ETH analizine sızar. Her sembol kendi cache'ini taşır.
+        self._htf_caches: dict[str, dict] = {}
+
+    def _cache_for(self, symbol: str) -> dict:
+        if symbol not in self._htf_caches:
+            self._htf_caches[symbol] = {}
+        return self._htf_caches[symbol]
 
     # ---------------- look-ahead garantisi ----------------
 
@@ -68,7 +76,9 @@ class LiveRunner:
 
     def run_once(self, symbol: str, now: Optional[datetime] = None) -> None:
         """Tek sembol için tek pipeline turunu çalıştır."""
-        now = now or datetime.utcnow()
+        if now is None:
+            # Naive UTC datetime — orchestrator at_bar timestamp'leri tz-naive.
+            now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
         at_bar = self._last_closed_m15(now)
         try:
             ohlcv_by_tf = {
@@ -81,7 +91,7 @@ class LiveRunner:
 
         try:
             picture = orchestrator_analyze(
-                ohlcv_by_tf, self.config, at_bar=at_bar, cache=self._htf_cache
+                ohlcv_by_tf, self.config, at_bar=at_bar, cache=self._cache_for(symbol)
             )
         except Exception as exc:
             logger.error("orchestrator failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
