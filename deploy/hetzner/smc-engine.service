@@ -1,0 +1,43 @@
+[Unit]
+Description=SMC Engine live Binance signal pipeline (log-only)
+Documentation=https://github.com/Leblepito/smc-engine/blob/main/docs/integrations/BINANCE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=smc
+Group=smc
+WorkingDirectory=/home/smc/smc-engine
+
+# .env yüklemesi run_live.py içindeki python-dotenv tarafından yapılıyor;
+# systemd EnvironmentFile yine de ikinci hat olarak okur (idempotent).
+EnvironmentFile=/home/smc/smc-engine/.env
+
+ExecStart=/home/smc/smc-engine/.venv/bin/python /home/smc/smc-engine/examples/run_live.py \
+  --log-dir /home/smc/smc-engine/logs \
+  --buffer-seconds 5
+
+# Restart politikası: hata varsa 5sn bekle, dakika içinde >5 fail olursa dur.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging: stdout + stderr -> journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=smc-engine
+
+# Hardening (smc user zaten unprivileged; ek katman)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/smc/smc-engine/logs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

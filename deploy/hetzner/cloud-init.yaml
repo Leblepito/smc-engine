@@ -1,0 +1,46 @@
+#cloud-config
+# Sub-proje #2 — Hetzner VPS bootstrap for smc-engine live signal pipeline.
+# Use during `POST /v1/servers` as the `user_data` field.
+# Replace the SSH key line below with your actual public key BEFORE submitting.
+
+users:
+  - name: smc
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - REPLACE_WITH_YOUR_SSH_PUBLIC_KEY
+
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: true
+packages:
+  - python3.12
+  - python3.12-venv
+  - python3.12-dev
+  - git
+  - build-essential
+  - ca-certificates
+  - curl
+  - pkg-config
+  - libssl-dev
+  - ufw
+  - unattended-upgrades
+  - jq
+  - htop
+
+runcmd:
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw --force enable
+  - echo 'APT::Periodic::Update-Package-Lists "1";' > /etc/apt/apt.conf.d/20auto-upgrades
+  - echo 'APT::Periodic::Unattended-Upgrade "1";' >> /etc/apt/apt.conf.d/20auto-upgrades
+  - mkdir -p /home/smc/smc-engine/logs
+  - chown -R smc:smc /home/smc/smc-engine
+  - hostnamectl set-hostname smc-engine-runner-01
+  - touch /var/lib/cloud/instance/cloud-init-done
+
+final_message: "cloud-init bootstrap complete in $UPTIME seconds"
