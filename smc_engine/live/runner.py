@@ -1,0 +1,111 @@
+"""``LiveRunner`` — APScheduler tick → adapter.fetch → orchestrator → setup_builder → risk_guard → logger.
+
+Spec §3 akışı. HTF cache runner ömrü boyu RAM'de tutulur. Look-ahead
+garantisi: ``at_bar = last_closed_M15`` (forming bar asla görülmez).
+
+Hata yönetimi (Spec §10):
+- Adapter exception → log error + skip; sonraki M15 tick'inde tekrar dene.
+- Setup yok / risk_guard reject → emit edilir (rejection da logger'ın işi).
+"""
+
+from __future__ import annotations
+
+import logging
+import traceback
+from datetime import datetime, timedelta
+from typing import Iterable, Optional, Protocol
+
+from smc_engine.config import SMCConfig
+from smc_engine.integrations._base import ExchangeAdapter
+from smc_engine.live.account_state import build_static_account_state
+from smc_engine.orchestrator import analyze as orchestrator_analyze
+from smc_engine.risk_guard import validate as risk_guard_validate
+from smc_engine.setup_builder import build as build_setup
+from smc_engine.types import TimeFrame
+
+logger = logging.getLogger(__name__)
+
+
+# Hangi TF'leri fetch edip orchestrator'a geçireceğiz.
+_TFS_TO_FETCH: tuple[TimeFrame, ...] = (TimeFrame.D1, TimeFrame.H4, TimeFrame.M15)
+
+
+class _SignalLoggerProtocol(Protocol):
+    def emit(self, payload) -> None: ...
+
+
+class LiveRunner:
+    """Tek-thread live pipeline. Scheduler tetikler → run_tick()."""
+
+    def __init__(
+        self,
+        adapter: ExchangeAdapter,
+        config: SMCConfig,
+        signal_logger: _SignalLoggerProtocol,
+    ) -> None:
+        self.adapter = adapter
+        self.config = config
+        self.signal_logger = signal_logger
+        # HTF cache runner ömrü boyu paylaşılır (Spec §7.1 + §13 trade-off #3).
+        self._htf_cache: dict = {}
+
+    # ---------------- look-ahead garantisi ----------------
+
+    @staticmethod
+    def _last_closed_m15(now: datetime) -> datetime:
+        """En son kapanmış M15 bar'ın open_time'ı.
+
+        Bir M15 bar [t, t+15) intervalinde açık; t+15'te kapanır. Eğer ``now``
+        tam t+15 ise o bar henüz "kapanış anı" — bir önceki M15'i döndür
+        (forming bar'ı dahil etmemek için katı sınır).
+        """
+        # Önce dakikayı 15'e yuvarla (truncate)
+        truncated = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+        # Şu anki M15 bar'ın open_time'ı; ondan önceki bar son kapanan.
+        return truncated - timedelta(minutes=15)
+
+    # ---------------- per-symbol pipeline ----------------
+
+    def run_once(self, symbol: str, now: Optional[datetime] = None) -> None:
+        """Tek sembol için tek pipeline turunu çalıştır."""
+        now = now or datetime.utcnow()
+        at_bar = self._last_closed_m15(now)
+        try:
+            ohlcv_by_tf = {
+                tf: self.adapter.fetch_ohlcv(symbol, tf, self.config.lookback_bars(tf))
+                for tf in _TFS_TO_FETCH
+            }
+        except Exception as exc:
+            logger.error("adapter fetch failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
+            return
+
+        try:
+            picture = orchestrator_analyze(
+                ohlcv_by_tf, self.config, at_bar=at_bar, cache=self._htf_cache
+            )
+        except Exception as exc:
+            logger.error("orchestrator failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
+            return
+
+        setup = build_setup(picture, self.config)
+        if setup is None:
+            return  # üretilemedi (skor düşük / SL anlamsız); rejection değil
+
+        try:
+            account_state = build_static_account_state(self.config)
+            result = risk_guard_validate(setup, account_state, self.config)
+        except Exception as exc:
+            logger.error("risk_guard failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
+            return
+
+        try:
+            self.signal_logger.emit(result)
+        except Exception as exc:
+            logger.error("signal_logger.emit failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
+
+    # ---------------- multi-symbol tick ----------------
+
+    def run_tick(self, symbols: Iterable[str], now: Optional[datetime] = None) -> None:
+        """Tek scheduler tick'i — her sembol için pipeline çalıştır."""
+        for sym in symbols:
+            self.run_once(sym, now=now)
