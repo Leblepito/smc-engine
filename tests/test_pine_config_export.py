@@ -57,6 +57,15 @@ def test_all_scalar_fields_appear_with_exact_names():
         "live_symbols", "live_exchange", "live_asset_class",
         "live_scheduler_buffer_seconds", "live_log_dir", "live_account_equity",
         "binance_testnet", "binance_rate_limit_buffer",
+        "execution_enabled", "execution_phase", "execution_testnet",
+        "execution_live_enabled", "execution_risk_per_trade_dollar",
+        "execution_leverage", "execution_margin_mode",
+        "execution_order_timeout_minutes",
+        "execution_kill_switch_consecutive_losses",
+        "execution_kill_switch_daily_loss_dollar",
+        "execution_kill_switch_equity_minimum",
+        "execution_fill_polling_seconds", "execution_reconcile_loop_seconds",
+        "execution_audit_log_dir", "execution_state_dir", "execution_symbols",
     }
     for f in fields(SMCConfig):
         if f.name in SUBMAP or f.name in LIVE_ONLY:

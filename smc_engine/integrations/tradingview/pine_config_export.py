@@ -29,8 +29,8 @@ _SUBMAP_FIELDS = {
 }
 _TUPLE_FIELDS = {"tp_r_multiples", "tp_weights"}
 
-# Sub-proje #2 — live runner + binance config alanlari Pine'a export edilmez
-# (TradingView indikator parametreleri ile alakasiz; runtime/ortam config).
+# Sub-proje #2 + #5A — live runner + binance + execution alanlari Pine'a export
+# edilmez (TradingView indikator parametreleri ile alakasiz; runtime/ortam).
 _LIVE_ONLY_FIELDS = {
     "live_symbols",
     "live_exchange",
@@ -40,6 +40,22 @@ _LIVE_ONLY_FIELDS = {
     "live_account_equity",
     "binance_testnet",
     "binance_rate_limit_buffer",
+    "execution_enabled",
+    "execution_phase",
+    "execution_testnet",
+    "execution_live_enabled",
+    "execution_risk_per_trade_dollar",
+    "execution_leverage",
+    "execution_margin_mode",
+    "execution_order_timeout_minutes",
+    "execution_kill_switch_consecutive_losses",
+    "execution_kill_switch_daily_loss_dollar",
+    "execution_kill_switch_equity_minimum",
+    "execution_fill_polling_seconds",
+    "execution_reconcile_loop_seconds",
+    "execution_audit_log_dir",
+    "execution_state_dir",
+    "execution_symbols",
 }
 
 

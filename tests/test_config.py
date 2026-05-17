@@ -295,3 +295,85 @@ def test_load_config_binance_override(tmp_path):
     c = load_config(p)
     assert c.binance_testnet is True
     assert c.binance_rate_limit_buffer == 0.6
+
+
+# ---------------- Sub-proje #5A — execution config (Spec §5) ----------------
+
+
+def test_smcconfig_execution_master_flag_off_by_default():
+    c = SMCConfig()
+    # Master flag — execution.enabled false default (canlı runner sub-proje #2
+    # davranışında kalır; execution kodu hiç çalışmaz).
+    assert c.execution_enabled is False
+    assert c.execution_phase == "5A"
+
+
+def test_smcconfig_execution_safety_defaults():
+    c = SMCConfig()
+    # Mainnet guard'ın 2 katmanı default'ta KAPALI.
+    assert c.execution_testnet is True
+    assert c.execution_live_enabled is False
+
+
+def test_smcconfig_execution_risk_params_defaults():
+    c = SMCConfig()
+    assert c.execution_risk_per_trade_dollar == 2.0
+    assert c.execution_leverage == 10
+    assert c.execution_margin_mode == "isolated"
+    assert c.execution_order_timeout_minutes == 60
+
+
+def test_smcconfig_execution_kill_switch_defaults():
+    c = SMCConfig()
+    assert c.execution_kill_switch_consecutive_losses == 3
+    assert c.execution_kill_switch_daily_loss_dollar == 5.0
+    assert c.execution_kill_switch_equity_minimum == 15.0
+
+
+def test_smcconfig_execution_polling_and_paths_defaults():
+    c = SMCConfig()
+    assert c.execution_fill_polling_seconds == 30
+    assert c.execution_reconcile_loop_seconds == 300
+    assert c.execution_audit_log_dir == "logs/trades"
+    assert c.execution_state_dir == "logs/state"
+    assert c.execution_symbols == ["BTCUSDT"]
+
+
+def test_load_config_execution_block_override(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(textwrap.dedent("""
+        execution:
+          enabled: true
+          phase: "5A"
+          testnet: false
+          live_enabled: true
+          risk_per_trade_dollar: 5.0
+          leverage: 5
+          order_timeout_minutes: 30
+          symbols: [BTCUSDT, ETHUSDT]
+    """))
+    c = load_config(p)
+    assert c.execution_enabled is True
+    assert c.execution_testnet is False
+    assert c.execution_live_enabled is True
+    assert c.execution_risk_per_trade_dollar == 5.0
+    assert c.execution_leverage == 5
+    assert c.execution_order_timeout_minutes == 30
+    assert c.execution_symbols == ["BTCUSDT", "ETHUSDT"]
+    # Dokunulmayan default
+    assert c.execution_margin_mode == "isolated"
+
+
+def test_load_config_execution_kill_switch_override(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(textwrap.dedent("""
+        execution:
+          kill_switch:
+            consecutive_losses: 5
+            daily_loss_dollar: 10.0
+            equity_minimum: 25.0
+    """))
+    c = load_config(p)
+    assert c.execution_kill_switch_consecutive_losses == 5
+    assert c.execution_kill_switch_daily_loss_dollar == 10.0
+    assert c.execution_kill_switch_equity_minimum == 25.0

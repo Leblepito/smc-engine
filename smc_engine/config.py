@@ -169,6 +169,34 @@ class SMCConfig:
     binance_testnet: bool = False
     binance_rate_limit_buffer: float = 0.8
 
+    # --- Sub-proje #5A — execution config (Spec §5) ---
+    # Master flag — default False: execution kodu CHANNEL'da kalır,
+    # canlı runner sub-proje #2 davranışında (log-only) çalışır.
+    execution_enabled: bool = False
+    execution_phase: str = "5A"
+    # MainnetGuard 3 katmanından 2'si (3.'sü startup delay):
+    #   layer 1: env SMC_ALLOW_LIVE=1
+    #   layer 2: bu alan (execution_live_enabled=True)
+    # execution_testnet=True ise live_enabled ignored, TESTNET zorlanır.
+    execution_testnet: bool = True
+    execution_live_enabled: bool = False
+    execution_risk_per_trade_dollar: float = 2.0
+    execution_leverage: int = 10
+    execution_margin_mode: str = "isolated"
+    execution_order_timeout_minutes: int = 60
+    # Kill switch eşikleri
+    execution_kill_switch_consecutive_losses: int = 3
+    execution_kill_switch_daily_loss_dollar: float = 5.0
+    execution_kill_switch_equity_minimum: float = 15.0
+    # Polling
+    execution_fill_polling_seconds: int = 30
+    execution_reconcile_loop_seconds: int = 300
+    # Paths
+    execution_audit_log_dir: str = "logs/trades"
+    execution_state_dir: str = "logs/state"
+    # 5A iÃ§in tek symbol; 5B'de geniÅler.
+    execution_symbols: list = field(default_factory=lambda: ["BTCUSDT"])
+
     def lookback_bars(self, tf: TimeFrame) -> int:
         return self.tf_lookback[tf]
 
@@ -194,6 +222,23 @@ _SUBMAP_FIELDS = (
     "live_account_equity",
     "binance_testnet",
     "binance_rate_limit_buffer",
+    # Sub-proje #5A — execution: bloğu altından gelir, flat scalar yok.
+    "execution_enabled",
+    "execution_phase",
+    "execution_testnet",
+    "execution_live_enabled",
+    "execution_risk_per_trade_dollar",
+    "execution_leverage",
+    "execution_margin_mode",
+    "execution_order_timeout_minutes",
+    "execution_kill_switch_consecutive_losses",
+    "execution_kill_switch_daily_loss_dollar",
+    "execution_kill_switch_equity_minimum",
+    "execution_fill_polling_seconds",
+    "execution_reconcile_loop_seconds",
+    "execution_audit_log_dir",
+    "execution_state_dir",
+    "execution_symbols",
 )
 
 # Sub-proje #2 — "live:" YAML alti -> SMCConfig.live_<key> alani esleme.
@@ -210,6 +255,30 @@ _LIVE_KEYS = {
 _BINANCE_KEYS = {
     "testnet": "binance_testnet",
     "rate_limit_buffer": "binance_rate_limit_buffer",
+}
+
+# Sub-proje #5A — "execution:" YAML alti -> SMCConfig.execution_<key> esleme.
+_EXECUTION_KEYS = {
+    "enabled": "execution_enabled",
+    "phase": "execution_phase",
+    "testnet": "execution_testnet",
+    "live_enabled": "execution_live_enabled",
+    "risk_per_trade_dollar": "execution_risk_per_trade_dollar",
+    "leverage": "execution_leverage",
+    "margin_mode": "execution_margin_mode",
+    "order_timeout_minutes": "execution_order_timeout_minutes",
+    "fill_polling_seconds": "execution_fill_polling_seconds",
+    "reconcile_loop_seconds": "execution_reconcile_loop_seconds",
+    "audit_log_dir": "execution_audit_log_dir",
+    "state_dir": "execution_state_dir",
+    "symbols": "execution_symbols",
+}
+
+# "execution.kill_switch:" alt-bloğu — ayrı eşleme (nested dict).
+_EXECUTION_KILL_SWITCH_KEYS = {
+    "consecutive_losses": "execution_kill_switch_consecutive_losses",
+    "daily_loss_dollar": "execution_kill_switch_daily_loss_dollar",
+    "equity_minimum": "execution_kill_switch_equity_minimum",
 }
 # tuple alanlar yaml'dan liste gelir; scalar setattr ile listeyi tuple'a
 # cevirerek alabiliriz, bu yuzden _SCALAR_FIELDS'te kalirlar.
@@ -363,6 +432,20 @@ def load_config(path: Optional[str | Path] = None) -> SMCConfig:
         elif key == "binance" and isinstance(value, dict):
             for sub_k, sub_v in value.items():
                 attr = _BINANCE_KEYS.get(sub_k)
+                if attr is None:
+                    continue
+                setattr(config, attr, sub_v)
+        elif key == "execution" and isinstance(value, dict):
+            for sub_k, sub_v in value.items():
+                # Nested kill_switch sub-bloğu
+                if sub_k == "kill_switch" and isinstance(sub_v, dict):
+                    for ks_k, ks_v in sub_v.items():
+                        attr = _EXECUTION_KILL_SWITCH_KEYS.get(ks_k)
+                        if attr is None:
+                            continue
+                        setattr(config, attr, ks_v)
+                    continue
+                attr = _EXECUTION_KEYS.get(sub_k)
                 if attr is None:
                     continue
                 setattr(config, attr, sub_v)
