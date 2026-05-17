@@ -324,10 +324,11 @@ def test_smcconfig_execution_risk_params_defaults():
 
 
 def test_smcconfig_execution_kill_switch_defaults():
+    """5A bütçesi $100'e çıkarıldı (önceki $25); kill switch eşikleri scale-up."""
     c = SMCConfig()
     assert c.execution_kill_switch_consecutive_losses == 3
-    assert c.execution_kill_switch_daily_loss_dollar == 5.0
-    assert c.execution_kill_switch_equity_minimum == 15.0
+    assert c.execution_kill_switch_daily_loss_dollar == 10.0
+    assert c.execution_kill_switch_equity_minimum == 75.0
 
 
 def test_smcconfig_execution_polling_and_paths_defaults():

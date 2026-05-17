@@ -153,9 +153,9 @@ def main() -> int:
         log.info("execution mainnet guard: mode=%s use_testnet=%s",
                  mainnet_mode.value, use_testnet)
 
-        order_client = BinanceOrderClient(
-            api_key=os.environ.get("BINANCE_API_KEY", ""),
-            api_secret=os.environ.get("BINANCE_API_SECRET", ""),
+        # Convention (2026-05-17): testnet → BINANCE_TESTNET_API_KEY/SECRET,
+        # mainnet → BINANCE_API_KEY/SECRET. from_env() seçimi otomatik yapar.
+        order_client = BinanceOrderClient.from_env(
             testnet=use_testnet,
             rate_limit_buffer=config.binance_rate_limit_buffer,
             config=config,

@@ -184,10 +184,11 @@ class SMCConfig:
     execution_leverage: int = 10
     execution_margin_mode: str = "isolated"
     execution_order_timeout_minutes: int = 60
-    # Kill switch eşikleri
+    # Kill switch eşikleri — $100 budget (kullanıcı kararı 2026-05-17):
+    # 5A bütçesi $25 → $100 yükseltildi; daily_loss + equity_minimum scale-up.
     execution_kill_switch_consecutive_losses: int = 3
-    execution_kill_switch_daily_loss_dollar: float = 5.0
-    execution_kill_switch_equity_minimum: float = 15.0
+    execution_kill_switch_daily_loss_dollar: float = 10.0
+    execution_kill_switch_equity_minimum: float = 75.0
     # Polling
     execution_fill_polling_seconds: int = 30
     execution_reconcile_loop_seconds: int = 300

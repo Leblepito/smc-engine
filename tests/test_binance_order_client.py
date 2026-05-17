@@ -75,6 +75,71 @@ def test_rate_limit_buffer_default_and_override():
 
 
 # =========================================================
+# from_env() helper — testnet/mainnet env key seti seçimi
+# =========================================================
+
+
+def test_from_env_testnet_picks_testnet_keys(monkeypatch):
+    """testnet=True → BINANCE_TESTNET_API_KEY/SECRET kullanılır."""
+    monkeypatch.setenv("BINANCE_API_KEY", "MAIN_KEY")
+    monkeypatch.setenv("BINANCE_API_SECRET", "MAIN_SECRET")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "TEST_KEY")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "TEST_SECRET")
+    with patch("smc_engine.integrations.binance.order_client.Client") as MockClient:
+        c = BinanceOrderClient.from_env(testnet=True)
+        assert c is not None
+        args, kwargs = MockClient.call_args
+        assert kwargs["api_key"] == "TEST_KEY"
+        assert kwargs["api_secret"] == "TEST_SECRET"
+        assert kwargs["testnet"] is True
+
+
+def test_from_env_mainnet_picks_mainnet_keys(monkeypatch):
+    """testnet=False → BINANCE_API_KEY/SECRET kullanılır (MainnetGuard approved varsayılır)."""
+    monkeypatch.setenv("BINANCE_API_KEY", "MAIN_KEY")
+    monkeypatch.setenv("BINANCE_API_SECRET", "MAIN_SECRET")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "TEST_KEY")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "TEST_SECRET")
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    with patch("smc_engine.integrations.binance.order_client.MainnetGuard") as MockGuard, \
+         patch("smc_engine.integrations.binance.order_client.Client") as MockClient:
+        MockGuard.is_approved.return_value = True
+        c = BinanceOrderClient.from_env(testnet=False, config=cfg)
+        assert c is not None
+        args, kwargs = MockClient.call_args
+        assert kwargs["api_key"] == "MAIN_KEY"
+        assert kwargs["api_secret"] == "MAIN_SECRET"
+        assert kwargs["testnet"] is False
+
+
+def test_from_env_testnet_missing_keys_warns_but_proceeds(monkeypatch, caplog):
+    """Testnet keys yoksa public-only modda çalışır; warning log."""
+    import logging
+    monkeypatch.delenv("BINANCE_TESTNET_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_TESTNET_API_SECRET", raising=False)
+    with patch("smc_engine.integrations.binance.order_client.Client"), \
+         caplog.at_level(logging.WARNING):
+        c = BinanceOrderClient.from_env(testnet=True)
+        assert c is not None
+        # Bir uyarı logu çıkmalı
+        assert any("testnet" in r.message.lower() for r in caplog.records)
+
+
+def test_from_env_mainnet_missing_keys_raises(monkeypatch):
+    """Mainnet keys yoksa RuntimeError (auth zorunlu)."""
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    with patch("smc_engine.integrations.binance.order_client.MainnetGuard") as MockGuard, \
+         patch("smc_engine.integrations.binance.order_client.Client"):
+        MockGuard.is_approved.return_value = True
+        with pytest.raises(RuntimeError, match="[Mm]ainnet"):
+            BinanceOrderClient.from_env(testnet=False, config=cfg)
+
+
+# =========================================================
 # X1.2 — Write endpoints (place / cancel / get_open_orders / get_order)
 # =========================================================
 

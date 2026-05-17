@@ -15,9 +15,13 @@ dataclass'larıyla çalÄ±Åır (smc_engine.execution._base).
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from binance.client import Client  # type: ignore[import-untyped]
 
@@ -160,6 +164,47 @@ class BinanceOrderClient:
         self.testnet = testnet
         self.rate_limit_buffer = rate_limit_buffer
         self._client = Client(api_key=api_key, api_secret=api_secret, testnet=testnet)
+
+    # ---------------- env-based factory ----------------
+
+    @classmethod
+    def from_env(
+        cls,
+        testnet: bool,
+        rate_limit_buffer: float = 0.8,
+        config: "SMCConfig | None" = None,
+    ) -> "BinanceOrderClient":
+        """Construct from environment variables — testnet/mainnet key seti seçimi.
+
+        Convention (kullanıcı 2026-05-17):
+          - mainnet: BINANCE_API_KEY / BINANCE_API_SECRET
+          - testnet: BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET
+
+        testnet=True: testnet keys yoksa public-only modda çalışır (warning).
+        testnet=False: mainnet keys zorunlu (yoksa RuntimeError) + MainnetGuard.
+        """
+        if testnet:
+            api_key = os.environ.get("BINANCE_TESTNET_API_KEY", "")
+            api_secret = os.environ.get("BINANCE_TESTNET_API_SECRET", "")
+            if not api_key or not api_secret:
+                logger.warning(
+                    "BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET set "
+                    "değil — testnet public-only modda. Order place çağrıları "
+                    "auth gerektirir; smoke test sırasında set et."
+                )
+        else:
+            api_key = os.environ.get("BINANCE_API_KEY", "")
+            api_secret = os.environ.get("BINANCE_API_SECRET", "")
+            if not api_key or not api_secret:
+                raise RuntimeError(
+                    "Mainnet için BINANCE_API_KEY ve BINANCE_API_SECRET .env'de "
+                    "olmalı (read+trade permissionlı, withdraw KAPALI key)."
+                )
+        return cls(
+            api_key=api_key, api_secret=api_secret,
+            testnet=testnet, rate_limit_buffer=rate_limit_buffer,
+            config=config,
+        )
 
     # ---------------- retry + error mapping ----------------
 

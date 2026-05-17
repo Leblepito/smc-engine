@@ -58,9 +58,7 @@ def main(argv=None) -> int:
     )
 
     symbols = [args.symbol] if args.symbol else cfg.execution_symbols
-    client = BinanceOrderClient(
-        api_key=os.environ.get("BINANCE_API_KEY", ""),
-        api_secret=os.environ.get("BINANCE_API_SECRET", ""),
+    client = BinanceOrderClient.from_env(
         testnet=cfg.execution_testnet,
         rate_limit_buffer=cfg.binance_rate_limit_buffer,
         config=cfg,

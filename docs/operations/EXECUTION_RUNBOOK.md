@@ -31,27 +31,29 @@ ssh smc@94.130.148.21 "tail -20 ~/smc-engine/logs/signals-\$(date -u +%Y%m%d).js
 
 ### 2.2 Config + .env hazırlık (VPS'te)
 
+**.env konvansiyonu (2026-05-17 kullanıcı kararı):** testnet ve mainnet keys
+yan yana yaşar. `BinanceOrderClient.from_env(testnet=True/False)` doğru seti
+otomatik seçer. Bu sayede testnet ↔ mainnet geçişi sadece config flag
+değişikliği — .env'e dokunmadan.
+
 ```bash
 ssh smc@94.130.148.21
-
 cd ~/smc-engine
-# Mevcut .env'yi yedekle
-cp .env .env.bak.subproje2
+cp .env .env.bak.subproje2  # Yedek
 
-# .env'i güncelle
-cat > .env <<'EOF'
-BINANCE_API_KEY=<testnet_key>
-BINANCE_API_SECRET=<testnet_secret>
-SMC_ALLOW_LIVE=0
+# .env'i güncelle — testnet keys EKLENİR (mevcut mainnet keys korunur)
+cat >> .env <<'EOF'
+BINANCE_TESTNET_API_KEY=<testnet_key>
+BINANCE_TESTNET_API_SECRET=<testnet_secret>
 EOF
 chmod 600 .env
 
-# config.yaml oluştur (yoksa)
+# config.yaml oluştur
 cat > config.yaml <<'EOF'
 execution:
   enabled: true
   phase: "5A"
-  testnet: true
+  testnet: true              # testnet keys kullanılır
   live_enabled: false
   risk_per_trade_dollar: 2.0
   leverage: 10
@@ -59,8 +61,8 @@ execution:
   symbols: [BTCUSDT]
   kill_switch:
     consecutive_losses: 3
-    daily_loss_dollar: 5.0
-    equity_minimum: 50.0
+    daily_loss_dollar: 10.0  # $100 budget — kullanıcı kararı
+    equity_minimum: 75.0
 EOF
 ```
 
@@ -128,18 +130,14 @@ Bu $25 risk-of-loss budget. Daha fazla koyma.
 ssh smc@94.130.148.21
 cd ~/smc-engine
 
-cat > .env <<'EOF'
-BINANCE_API_KEY=<mainnet_key>
-BINANCE_API_SECRET=<mainnet_secret>
-SMC_ALLOW_LIVE=1
-EOF
-chmod 600 .env
+# Mainnet keys + SMC_ALLOW_LIVE=1 (testnet keys kalır — geçişi flag belirler)
+# Eğer .env'de zaten BINANCE_API_KEY/SECRET varsa onları override etme;
+# yalnızca SMC_ALLOW_LIVE=0 → 1 değişikliği gerekir.
+sed -i 's/^SMC_ALLOW_LIVE=0$/SMC_ALLOW_LIVE=1/' .env
 
-# config.yaml güncelle: testnet → false, live_enabled → true
+# config.yaml: testnet → false, live_enabled → true
 sed -i 's/testnet: true/testnet: false/' config.yaml
 sed -i 's/live_enabled: false/live_enabled: true/' config.yaml
-# equity_minimum'u risk seviyene göre ayarla
-sed -i 's/equity_minimum: 50.0/equity_minimum: 15.0/' config.yaml
 ```
 
 ### 3.4 Restart + initial verification
