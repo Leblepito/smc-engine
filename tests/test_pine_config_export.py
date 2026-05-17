@@ -51,8 +51,15 @@ def test_all_scalar_fields_appear_with_exact_names():
     out = to_pine_inputs(SMCConfig())
     SUBMAP = {"confluence_weights", "tf_lookback", "poi_kind_quality", "zone_status_factor"}
     TUPLE_FIELDS = {"tp_r_multiples", "tp_weights"}
+    # Sub-proje #2 — live runner + binance config alanlari Pine'a export
+    # edilmez (runtime/ortam ayarlari; TV indikator parametreleri degil).
+    LIVE_ONLY = {
+        "live_symbols", "live_exchange", "live_asset_class",
+        "live_scheduler_buffer_seconds", "live_log_dir", "live_account_equity",
+        "binance_testnet", "binance_rate_limit_buffer",
+    }
     for f in fields(SMCConfig):
-        if f.name in SUBMAP:
+        if f.name in SUBMAP or f.name in LIVE_ONLY:
             continue
         if f.name in TUPLE_FIELDS:
             # Tuple alanlar indeksli olarak emit edilir: name_0, name_1, ...

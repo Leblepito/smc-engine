@@ -336,3 +336,37 @@ class BacktestResult:
     trades: list[Trade]
     equity_curve: "pd.Series"  # index=M15 timestamp, value=equity
     metrics: dict
+
+
+# ============================================================
+# Sub-proje #2 — borsa adapter veri tipleri (Spec §5)
+# ============================================================
+# ``_base.ExchangeAdapter`` Protocol bu tipleri tüketir / üretir; ortak
+# olduğu için burada tanımlı, ``_base`` üzerinden re-export edilir.
+
+
+@dataclass(frozen=True)
+class SymbolMeta:
+    """Sembol metadata — emir validation + R-sizing için (Spec §5)."""
+
+    symbol: str
+    tick_size: float
+    lot_size: float
+    min_qty: float
+    price_precision: int
+    qty_precision: int
+
+
+@dataclass(frozen=True)
+class Kline:
+    """Tek bar (Spec §5). ``is_closed=False`` forming bar; analiz dışında bırakılır."""
+
+    symbol: str
+    timeframe: TimeFrame
+    open_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_closed: bool

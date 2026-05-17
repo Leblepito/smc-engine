@@ -155,6 +155,20 @@ class SMCConfig:
         default_factory=lambda: dict(TF_LOOKBACK)
     )
 
+    # --- Sub-proje #2 — live runner config (Spec §6) ---
+    live_symbols: list = field(
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    )
+    live_exchange: str = "binance"
+    live_asset_class: str = "futures_usdtm"
+    live_scheduler_buffer_seconds: int = 5
+    live_log_dir: str = "./logs"
+    live_account_equity: float = 10000.0
+
+    # --- Sub-proje #2 — binance adapter config (Spec §6) ---
+    binance_testnet: bool = False
+    binance_rate_limit_buffer: float = 0.8
+
     def lookback_bars(self, tf: TimeFrame) -> int:
         return self.tf_lookback[tf]
 
@@ -169,7 +183,34 @@ _SUBMAP_FIELDS = (
     "tf_lookback",
     "poi_kind_quality",
     "zone_status_factor",
+    # Sub-proje #2 — live + binance bloklari YAML'da "live:" / "binance:"
+    # alti olarak gelir; flat scalar olarak okunamaz (alan adi prefix'siz
+    # gelir). load_config bunlari ayri bir branch'te handle eder.
+    "live_symbols",
+    "live_exchange",
+    "live_asset_class",
+    "live_scheduler_buffer_seconds",
+    "live_log_dir",
+    "live_account_equity",
+    "binance_testnet",
+    "binance_rate_limit_buffer",
 )
+
+# Sub-proje #2 — "live:" YAML alti -> SMCConfig.live_<key> alani esleme.
+_LIVE_KEYS = {
+    "symbols": "live_symbols",
+    "exchange": "live_exchange",
+    "asset_class": "live_asset_class",
+    "scheduler_buffer_seconds": "live_scheduler_buffer_seconds",
+    "log_dir": "live_log_dir",
+    "account_equity": "live_account_equity",
+}
+
+# Sub-proje #2 — "binance:" YAML alti -> SMCConfig.binance_<key> alani esleme.
+_BINANCE_KEYS = {
+    "testnet": "binance_testnet",
+    "rate_limit_buffer": "binance_rate_limit_buffer",
+}
 # tuple alanlar yaml'dan liste gelir; scalar setattr ile listeyi tuple'a
 # cevirerek alabiliriz, bu yuzden _SCALAR_FIELDS'te kalirlar.
 _SCALAR_FIELDS = {
@@ -313,6 +354,18 @@ def load_config(path: Optional[str | Path] = None) -> SMCConfig:
             target = getattr(config, key)
             for sub_k, sub_v in value.items():
                 target[sub_k] = sub_v
+        elif key == "live" and isinstance(value, dict):
+            for sub_k, sub_v in value.items():
+                attr = _LIVE_KEYS.get(sub_k)
+                if attr is None:
+                    continue
+                setattr(config, attr, sub_v)
+        elif key == "binance" and isinstance(value, dict):
+            for sub_k, sub_v in value.items():
+                attr = _BINANCE_KEYS.get(sub_k)
+                if attr is None:
+                    continue
+                setattr(config, attr, sub_v)
         # bilinmeyen anahtarlar sessizce yok sayılır
 
     return config

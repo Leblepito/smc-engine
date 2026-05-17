@@ -29,6 +29,19 @@ _SUBMAP_FIELDS = {
 }
 _TUPLE_FIELDS = {"tp_r_multiples", "tp_weights"}
 
+# Sub-proje #2 — live runner + binance config alanlari Pine'a export edilmez
+# (TradingView indikator parametreleri ile alakasiz; runtime/ortam config).
+_LIVE_ONLY_FIELDS = {
+    "live_symbols",
+    "live_exchange",
+    "live_asset_class",
+    "live_scheduler_buffer_seconds",
+    "live_log_dir",
+    "live_account_equity",
+    "binance_testnet",
+    "binance_rate_limit_buffer",
+}
+
 
 def _pine_float_literal(v: float) -> str:
     """Pine'in beklentisine uygun float gosterim — int'leri 1.0 yapar."""
@@ -100,7 +113,7 @@ def to_pine_inputs(config: SMCConfig) -> str:
     # 1) Scalar + tuple alanlar (config field siras ile, deterministik)
     lines.append("// --- Detector & risk scalars ---")
     for f in fields(SMCConfig):
-        if f.name in _SUBMAP_FIELDS:
+        if f.name in _SUBMAP_FIELDS or f.name in _LIVE_ONLY_FIELDS:
             continue
         value = getattr(config, f.name)
         if f.name in _TUPLE_FIELDS and isinstance(value, (tuple, list)):

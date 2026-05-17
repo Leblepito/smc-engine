@@ -246,3 +246,52 @@ def test_load_config_zone_status_factor_override(tmp_path):
     c = load_config(p)
     assert c.zone_status_factor["TESTED"] == 0.5
     assert c.zone_status_factor["FRESH"] == 1.0
+
+
+# ---------------- Sub-proje #2 — live + binance config blokları (Spec §6) ----------------
+
+
+def test_smcconfig_live_defaults():
+    c = SMCConfig()
+    assert c.live_symbols == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert c.live_exchange == "binance"
+    assert c.live_asset_class == "futures_usdtm"
+    assert c.live_scheduler_buffer_seconds == 5
+    assert c.live_log_dir == "./logs"
+    assert c.live_account_equity == 10000.0
+
+
+def test_smcconfig_binance_defaults():
+    c = SMCConfig()
+    assert c.binance_testnet is False
+    assert c.binance_rate_limit_buffer == 0.8
+
+
+def test_load_config_live_override(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(textwrap.dedent("""
+        live:
+          symbols: [BTCUSDT, XRPUSDT]
+          scheduler_buffer_seconds: 10
+          account_equity: 25000.0
+          log_dir: /tmp/sig
+    """))
+    c = load_config(p)
+    assert c.live_symbols == ["BTCUSDT", "XRPUSDT"]
+    assert c.live_scheduler_buffer_seconds == 10
+    assert c.live_account_equity == 25000.0
+    assert c.live_log_dir == "/tmp/sig"
+    # dokunulmayan default
+    assert c.live_exchange == "binance"
+
+
+def test_load_config_binance_override(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(textwrap.dedent("""
+        binance:
+          testnet: true
+          rate_limit_buffer: 0.6
+    """))
+    c = load_config(p)
+    assert c.binance_testnet is True
+    assert c.binance_rate_limit_buffer == 0.6
