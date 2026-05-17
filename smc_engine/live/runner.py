@@ -21,7 +21,7 @@ from smc_engine.live.account_state import build_static_account_state
 from smc_engine.orchestrator import analyze as orchestrator_analyze
 from smc_engine.risk_guard import validate as risk_guard_validate
 from smc_engine.setup_builder import build as build_setup
-from smc_engine.types import TimeFrame
+from smc_engine.types import TimeFrame, ValidatedSetup
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,14 @@ class LiveRunner:
         adapter: ExchangeAdapter,
         config: SMCConfig,
         signal_logger: _SignalLoggerProtocol,
+        order_manager=None,  # Sub-proje #5A: opsiyonel; None ise log-only
     ) -> None:
         self.adapter = adapter
         self.config = config
         self.signal_logger = signal_logger
+        # Sub-proje #5A execution hook. None → eski sub-proje #2 davranıÅı.
+        # config.execution_enabled=True ise CLI/init bu parametreyi geçirir.
+        self.order_manager = order_manager
         # HTF cache runner ömrü boyu paylaşılır (Spec §7.1 + §13 trade-off #3).
         # Per-symbol: orchestrator cache key = (tf, ts); sembolden bağımsız
         # olduğu için tek dict tüm sembollere paylaşılırsa BTC'nin D1 zone'u
@@ -112,6 +116,18 @@ class LiveRunner:
             self.signal_logger.emit(result)
         except Exception as exc:
             logger.error("signal_logger.emit failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
+
+        # Sub-proje #5A execution hook. order_manager varsa ve sonuç
+        # ValidatedSetup ise (rejection deÄil) emire çevir. Rejection'lar
+        # zaten signal_logger'da; execution'a girmez.
+        if self.order_manager is not None and isinstance(result, ValidatedSetup):
+            try:
+                self.order_manager.process_setup(result, symbol=symbol, at_bar=at_bar)
+            except Exception as exc:
+                logger.error(
+                    "order_manager.process_setup failed for %s: %s\n%s",
+                    symbol, exc, traceback.format_exc(),
+                )
 
     # ---------------- multi-symbol tick ----------------
 

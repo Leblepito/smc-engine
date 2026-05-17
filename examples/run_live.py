@@ -1,15 +1,22 @@
-"""SMC Engine — Sub-proje #2 canlı sinyal CLI (log-only mod).
+"""SMC Engine canlı sinyal CLI — Sub-proje #2 (log-only) + #5A (execution opt-in).
 
-Kullanım:
+Kullanım (log-only, sub-proje #2):
     python examples/run_live.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --equity 10000
+
+Kullanım (execution, sub-proje #5A testnet):
+    SMC_ALLOW_LIVE=0 python examples/run_live.py --execution-enabled --symbols BTCUSDT
 
 Akış (Spec §3):
     APScheduler M15:05 → BinanceAdapter.fetch_ohlcv (D1, H4, M15)
         → orchestrator.analyze (at_bar=last_closed_M15, htf_cache)
         → setup_builder.build → risk_guard.validate
         → SignalLogger.emit → logs/signals-YYYYMMDD.jsonl + stdout
+        → (opt-in) OrderManager.process_setup → logs/trades-YYYYMMDD.jsonl
 
-#5'te emir gönderme eklenecek; bu CLI'de ``--live`` flag bilinçli olarak YOK.
+Mainnet 3 katman guard:
+  1) env SMC_ALLOW_LIVE=1
+  2) config.execution.live_enabled=true
+  3) startup 5sn delay + WARNING
 """
 
 from __future__ import annotations
@@ -36,6 +43,19 @@ from smc_engine.live.runner import LiveRunner
 from smc_engine.live.scheduler import LiveScheduler
 from smc_engine.live.signal_logger import SignalLogger
 from smc_engine.types import TimeFrame
+
+
+def _git_sha() -> str:
+    """Best-effort current commit sha (audit log için)."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -68,6 +88,13 @@ def _parse_args() -> argparse.Namespace:
         default=cfg_defaults.live_scheduler_buffer_seconds,
         help="Seconds after M15 close before tick fires",
     )
+    # Sub-proje #5A execution opt-in. Default False — runner sub-proje #2
+    # (log-only) davranışında kalır.
+    p.add_argument(
+        "--execution-enabled",
+        action="store_true",
+        help="Enable order execution (Sub-proje #5A). Default: log-only.",
+    )
     return p.parse_args()
 
 
@@ -98,14 +125,66 @@ def main() -> int:
     config.live_log_dir = args.log_dir
     config.binance_testnet = args.testnet
     config.live_scheduler_buffer_seconds = args.buffer_seconds
+    config.execution_enabled = args.execution_enabled
 
-    log.info("starting live pipeline: symbols=%s equity=%.2f log_dir=%s testnet=%s",
-             symbols, args.equity, args.log_dir, args.testnet)
+    log.info("starting live pipeline: symbols=%s equity=%.2f log_dir=%s testnet=%s execution=%s",
+             symbols, args.equity, args.log_dir, args.testnet, args.execution_enabled)
 
     client = BinanceClient(
         testnet=args.testnet, rate_limit_buffer=config.binance_rate_limit_buffer
     )
     adapter = BinanceAdapter(client=client)
+
+    # Sub-proje #5A: execution stack opt-in
+    order_manager_per_symbol: dict[str, object] = {}
+    audit_log = None
+    if args.execution_enabled:
+        from smc_engine.execution.audit_log import AuditLog
+        from smc_engine.execution.kill_switch import KillSwitch
+        from smc_engine.execution.mainnet_guard import MainnetGuard, MainnetMode
+        from smc_engine.execution.order_manager import OrderManager
+        from smc_engine.execution.position_tracker import PositionTracker
+        from smc_engine.integrations.binance.order_client import BinanceOrderClient
+        from pathlib import Path as _P
+
+        # Mainnet guard ON-START — 3 katman; geçemezse TESTNET zorla
+        mainnet_mode = MainnetGuard.check(config)
+        use_testnet = mainnet_mode is MainnetMode.TESTNET
+        log.info("execution mainnet guard: mode=%s use_testnet=%s",
+                 mainnet_mode.value, use_testnet)
+
+        order_client = BinanceOrderClient(
+            api_key=os.environ.get("BINANCE_API_KEY", ""),
+            api_secret=os.environ.get("BINANCE_API_SECRET", ""),
+            testnet=use_testnet,
+            rate_limit_buffer=config.binance_rate_limit_buffer,
+            config=config,
+        )
+        audit_log = AuditLog(
+            log_dir=config.execution_audit_log_dir,
+            engine_sha=_git_sha(),
+            testnet=use_testnet,
+            phase=config.execution_phase,
+        )
+        kill_switch = KillSwitch(
+            consecutive_loss_threshold=config.execution_kill_switch_consecutive_losses,
+            daily_loss_threshold=config.execution_kill_switch_daily_loss_dollar,
+            equity_minimum=config.execution_kill_switch_equity_minimum,
+            state_path=_P(config.execution_state_dir) / "kill_switch_state.json",
+            audit_log=audit_log,
+        )
+
+        for sym in symbols:
+            tracker = PositionTracker()
+            state_file = _P(config.execution_state_dir) / f"positions-{sym}.json"
+            tracker.load_state(state_file)
+            order_manager_per_symbol[sym] = OrderManager(
+                order_client=order_client,
+                position_tracker=tracker,
+                audit_log=audit_log,
+                kill_switch=kill_switch,
+                config=config,
+            )
 
     # Her sembol için ayrı logger (dosya adı aynı; symbol payload'da)
     # — burada tek logger kullanıp sembolü emit edilen payload'da gösteriyoruz.
@@ -116,7 +195,12 @@ def main() -> int:
     }
 
     runners: dict[str, LiveRunner] = {
-        sym: LiveRunner(adapter=adapter, config=config, signal_logger=loggers[sym])
+        sym: LiveRunner(
+            adapter=adapter,
+            config=config,
+            signal_logger=loggers[sym],
+            order_manager=order_manager_per_symbol.get(sym),  # None ise log-only
+        )
         for sym in symbols
     }
 
@@ -128,6 +212,15 @@ def main() -> int:
                 runner.run_once(sym)
             except Exception as exc:
                 log.error("tick failed for %s: %s", sym, exc)
+        # Sub-proje #5A: after each M15 setup tick, also run execution polling
+        # (cheap; in-memory checks for any PENDING/ACTIVE orders).
+        if args.execution_enabled:
+            for sym, om in order_manager_per_symbol.items():
+                try:
+                    om.tick_timeout_watcher()
+                    om.tick_fill_polling()
+                except Exception as exc:
+                    log.error("execution tick failed for %s: %s", sym, exc)
 
     scheduler.start(_tick)
     log.info("scheduler started; M15 kapanış + %ds tetiklenecek. Ctrl+C ile durdur.",

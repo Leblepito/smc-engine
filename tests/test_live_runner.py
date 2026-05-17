@@ -172,6 +172,71 @@ def test_runner_multi_symbol_pipelines_independent(monkeypatch):
     assert mock_analyze.call_count == 2
 
 
+def test_runner_no_execution_hook_when_order_manager_none(monkeypatch):
+    """order_manager=None default → backward compat sub-proje #2 behaviour."""
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+    fake_setup = MagicMock(name="setup")
+    fake_validated = MagicMock(name="validated", spec=[])  # not a ValidatedSetup
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="picture"))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
+
+    logger_mock = MagicMock()
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger_mock)
+    runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+    logger_mock.emit.assert_called_once()
+    # order_manager None → emit only, no process_setup attempt
+    assert runner.order_manager is None
+
+
+def test_runner_execution_hook_called_when_validated_setup(monkeypatch):
+    """order_manager set + result is ValidatedSetup → process_setup çağrılır."""
+    from smc_engine.types import ValidatedSetup
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+    # Real-ish ValidatedSetup (spec/isinstance check)
+    fake_setup_obj = MagicMock(name="setup")
+    fake_validated = MagicMock(spec=ValidatedSetup)
+    fake_validated.setup = fake_setup_obj
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="pic"))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup_obj))
+    monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
+
+    logger_mock = MagicMock()
+    om = MagicMock()
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger_mock, order_manager=om)
+    runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    logger_mock.emit.assert_called_once_with(fake_validated)
+    om.process_setup.assert_called_once()
+    call_kwargs = om.process_setup.call_args.kwargs
+    assert call_kwargs["symbol"] == "BTCUSDT"
+    assert "at_bar" in call_kwargs
+
+
+def test_runner_execution_hook_skipped_for_rejection(monkeypatch):
+    """Result is Rejection (not ValidatedSetup) → only signal_logger, no order_manager."""
+    from smc_engine.types import Rejection
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+    fake_rej = MagicMock(spec=Rejection)
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="pic"))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_rej))
+
+    logger_mock = MagicMock()
+    om = MagicMock()
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger_mock, order_manager=om)
+    runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    logger_mock.emit.assert_called_once_with(fake_rej)
+    om.process_setup.assert_not_called()  # rejection → execution skipped
+
+
 def test_runner_last_closed_m15_truncates_to_quarter_hour():
     """Spec §3 look-ahead: at_bar = en son kapanmış M15 bar'ın open_time'ı.
 
