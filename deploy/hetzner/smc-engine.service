@@ -3,6 +3,9 @@ Description=SMC Engine live Binance signal pipeline (log-only)
 Documentation=https://github.com/Leblepito/smc-engine/blob/main/docs/integrations/BINANCE.md
 After=network-online.target
 Wants=network-online.target
+# systemd ≥229: StartLimit* lives in [Unit], not [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -18,11 +21,9 @@ ExecStart=/home/smc/smc-engine/.venv/bin/python /home/smc/smc-engine/examples/ru
   --log-dir /home/smc/smc-engine/logs \
   --buffer-seconds 5
 
-# Restart politikası: hata varsa 5sn bekle, dakika içinde >5 fail olursa dur.
+# Restart politikası: hata varsa 5sn bekle, dakika içinde >5 fail olursa dur (StartLimit* [Unit]'te).
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Logging: stdout + stderr -> journald
 StandardOutput=journal
