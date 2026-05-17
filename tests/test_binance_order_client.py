@@ -36,20 +36,31 @@ def test_constructor_testnet_url_switching():
         assert kwargs.get("testnet") is True
 
 
-def test_constructor_mainnet_without_guard_raises():
-    """testnet=False ise MainnetGuard.is_approved() Åart; False dÃ¶nerse RuntimeError."""
-    with patch("smc_engine.integrations.binance.order_client.MainnetGuard") as MockGuard, \
-         patch("smc_engine.integrations.binance.order_client.Client"):
-        MockGuard.is_approved.return_value = False
+def test_constructor_mainnet_without_config_raises():
+    """testnet=False ise config zorunlu (MainnetGuard layer 2 için)."""
+    with patch("smc_engine.integrations.binance.order_client.Client"):
         with pytest.raises(RuntimeError, match="[Mm]ainnet"):
             BinanceOrderClient(api_key="a", api_secret="b", testnet=False)
 
 
+def test_constructor_mainnet_guard_rejects_raises():
+    """testnet=False ise MainnetGuard.is_approved(config) Åart; False dÃ¶nerse RuntimeError."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    with patch("smc_engine.integrations.binance.order_client.MainnetGuard") as MockGuard, \
+         patch("smc_engine.integrations.binance.order_client.Client"):
+        MockGuard.is_approved.return_value = False
+        with pytest.raises(RuntimeError, match="[Mm]ainnet"):
+            BinanceOrderClient(api_key="a", api_secret="b", testnet=False, config=cfg)
+
+
 def test_constructor_mainnet_with_guard_approved_ok():
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
     with patch("smc_engine.integrations.binance.order_client.MainnetGuard") as MockGuard, \
          patch("smc_engine.integrations.binance.order_client.Client") as MockClient:
         MockGuard.is_approved.return_value = True
-        client = BinanceOrderClient(api_key="a", api_secret="b", testnet=False)
+        client = BinanceOrderClient(api_key="a", api_secret="b", testnet=False, config=cfg)
         assert client is not None
         args, kwargs = MockClient.call_args
         assert kwargs.get("testnet") is False

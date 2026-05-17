@@ -44,6 +44,9 @@ from smc_engine.execution._base import (
 )
 from smc_engine.execution.mainnet_guard import MainnetGuard
 
+if False:  # TYPE_CHECKING workaround for circular import safety
+    from smc_engine.config import SMCConfig  # noqa: F401
+
 
 # ============================================================
 # Errors
@@ -140,13 +143,18 @@ class BinanceOrderClient:
         api_secret: str,
         testnet: bool,
         rate_limit_buffer: float = 0.8,
+        config: "SMCConfig | None" = None,
     ) -> None:
         if not testnet:
-            # Mainnet → 3 katman guard'Ä±n son katmanÄ± burada (X3.1'de gerçek
-            # impl gelene kadar default False; sÄ±nÄ±f mainnet'i bloklar).
-            if not MainnetGuard.is_approved():
+            # Mainnet → 3 katman guard.
+            if config is None:
+                # Defansif: config verilmedi ama mainnet isteniyor → reject.
                 raise RuntimeError(
-                    "Mainnet not approved — MainnetGuard.is_approved() False. "
+                    "Mainnet requires SMCConfig argument (for MainnetGuard layer 2 check)."
+                )
+            if not MainnetGuard.is_approved(config):
+                raise RuntimeError(
+                    "Mainnet not approved — MainnetGuard.is_approved(config) False. "
                     "Mainnet için: SMC_ALLOW_LIVE=1 + config.execution_live_enabled=true."
                 )
         self.testnet = testnet
