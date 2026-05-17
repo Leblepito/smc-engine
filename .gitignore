@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 .env
+config.yaml
 logs/
 tmp_deploy/
 

@@ -1,0 +1,55 @@
+# SMC Engine — Configuration Template
+#
+# Bu dosya repo'da template olarak commit'lenir. Gerçek `config.yaml`
+# bu dosyayı kopyalayıp lokal / VPS-spesifik değerlerle doldurularak
+# üretilir. `config.yaml` `.gitignore` içindedir — accidental commit yok.
+#
+# Kullanım:
+#   cp config.yaml.example config.yaml
+#   # config.yaml'i kendi bütçen / sembollerin / mainnet flagleriyle güncelle
+#
+# Pattern: .env / .env.example ile birebir simetrik.
+
+# ============================================================
+# Sub-proje #5 — Execution layer
+# ============================================================
+execution:
+  enabled: false              # MASTER FLAG. Default kapalı. Smoke için aç.
+  phase: "5A"                 # "5A" (walking skeleton) | "5B" (production v1)
+  testnet: true               # true: Binance Futures Testnet, false: Mainnet
+  live_enabled: false         # MainnetGuard layer 2. Mainnet için true
+                              # (env SMC_ALLOW_LIVE=1 + bu = MAINNET)
+  symbols: ["BTCUSDT"]        # 5A: tek sembol. 5B: ["BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","LINKUSDT"]
+
+  # 5A sabit değerleri
+  risk_per_trade_dollar: 2.0
+  leverage: 10
+  margin_mode: "isolated"
+  order_timeout_minutes: 60
+
+  # Kill switch — $100 bütçe default'u (kullanıcı kararı 2026-05-17).
+  # $25 bütçe için: daily_loss_dollar=5.0, equity_minimum=15.0
+  kill_switch:
+    consecutive_losses: 3
+    daily_loss_dollar: 10.0
+    equity_minimum: 75.0
+
+  # Polling intervals (genellikle değiştirilmez)
+  fill_polling_seconds: 30
+  reconcile_loop_seconds: 300
+
+  # Paths (gitignored: logs/)
+  audit_log_dir: "logs/trades"
+  state_dir: "logs/state"
+
+# ============================================================
+# Sub-proje #2 — Signal pipeline (log-only fallback)
+# ============================================================
+live:
+  symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+  scheduler_buffer_seconds: 5
+  log_dir: "./logs"
+
+binance:
+  testnet: false              # sub-proje #2 read path (kline). Execution path'i ayrı (execution.testnet).
+  rate_limit_buffer: 0.8

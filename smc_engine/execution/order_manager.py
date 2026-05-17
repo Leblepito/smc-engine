@@ -91,6 +91,8 @@ class OrderManager:
         try:
             symbol_meta = self.order_client.get_symbol_meta(symbol)
             account = self.order_client.get_account()
+            # min_notional exchange'den geliyorsa onu kullan, yoksa 5.0 safe default.
+            mn = symbol_meta.min_notional if symbol_meta.min_notional > 0 else 5.0
             size = calc_position_size(
                 risk_dollar=self.config.execution_risk_per_trade_dollar,
                 entry=validated.setup.entry,
@@ -98,6 +100,7 @@ class OrderManager:
                 leverage=self.config.execution_leverage,
                 symbol_meta=symbol_meta,
                 account=account,
+                min_notional=mn,
             )
         except (OrderSizeBelowMinimum, InsufficientMargin, InvalidStopLoss) as exc:
             self.audit_log.emit(

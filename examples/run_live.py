@@ -111,6 +111,18 @@ def _parse_args_with(argv: list[str]) -> argparse.Namespace:
     return _build_parser().parse_args(argv)
 
 
+def _resolve_symbols(config: SMCConfig) -> list[str]:
+    """Sembol listesi precedence — execution_enabled ise execution.symbols, yoksa live.symbols.
+
+    5A walking skeleton: execution.symbols=['BTCUSDT'] tek-sembol kısıtı;
+    sub-proje #2 live.symbols (default 3 sembol) sadece log-only modda
+    veya execution.symbols boş bırakıldıysa kullanılır.
+    """
+    if config.execution_enabled and config.execution_symbols:
+        return list(config.execution_symbols)
+    return list(config.live_symbols)
+
+
 def _validate_execution_config(config: SMCConfig) -> None:
     """Sanity check before bringing up execution stack.
 
@@ -173,15 +185,19 @@ def main(argv: list[str] | None = None) -> int:
     config = _resolve_config(args)
     _validate_execution_config(config)
 
-    symbols = config.live_symbols
+    symbols = _resolve_symbols(config)
     if not symbols:
-        log.error("En az bir sembol gerekli: config.live_symbols veya --symbols")
+        log.error("En az bir sembol gerekli: config.execution.symbols / config.live.symbols / --symbols")
         return 2
 
+    symbol_source = (
+        "execution.symbols" if (config.execution_enabled and config.execution_symbols)
+        else "live.symbols"
+    )
     log.info(
-        "starting live pipeline: symbols=%s log_dir=%s execution_enabled=%s "
-        "execution_testnet=%s execution_live_enabled=%s",
-        symbols, config.live_log_dir, config.execution_enabled,
+        "starting live pipeline: symbols=%s (source=%s) log_dir=%s "
+        "execution_enabled=%s execution_testnet=%s execution_live_enabled=%s",
+        symbols, symbol_source, config.live_log_dir, config.execution_enabled,
         config.execution_testnet, config.execution_live_enabled,
     )
 

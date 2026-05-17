@@ -355,6 +355,7 @@ class SymbolMeta:
     min_qty: float
     price_precision: int
     qty_precision: int
+    min_notional: float = 0.0
 
 
 @dataclass(frozen=True)

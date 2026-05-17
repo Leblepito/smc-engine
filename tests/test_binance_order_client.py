@@ -486,3 +486,92 @@ def test_error_mapping_percent_price_4131():
             c.place_order(req)
         assert exc_info.value.code == -4131
         assert exc_info.value.retryable is False
+
+
+# =========================================================
+# X1.6 — get_symbol_meta (exchange_info caching) — Spec §4.1, §10.1
+# =========================================================
+
+
+def _exchange_info_fixture():
+    """Minimal futures_exchange_info payload, 2 sembol, MIN_NOTIONAL + LOT_SIZE."""
+    return {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "pricePrecision": 2,
+                "quantityPrecision": 3,
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "5.0"},
+                ],
+            },
+            {
+                "symbol": "ETHUSDT",
+                "pricePrecision": 2,
+                "quantityPrecision": 3,
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "NOTIONAL", "notional": "5.0"},
+                ],
+            },
+        ]
+    }
+
+
+def test_get_symbol_meta_fetches_and_caches():
+    """İlk çağrı futures_exchange_info çağırır; ikinci çağrı cache'ten döner."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        m1 = c.get_symbol_meta("BTCUSDT")
+        assert m1.symbol == "BTCUSDT"
+        assert m1.lot_size == 0.001
+        assert m1.tick_size == 0.10
+        assert m1.min_notional == 5.0
+        # İkinci çağrı — REST tekrar tetiklenmemeli
+        m2 = c.get_symbol_meta("BTCUSDT")
+        assert m2 is m1 or m2 == m1
+        assert mock.futures_exchange_info.call_count == 1
+    finally:
+        patcher.stop()
+
+
+def test_get_symbol_meta_min_notional_fallback_to_notional_filter():
+    """ETHUSDT yeni-API "NOTIONAL" filter'ı; eski "MIN_NOTIONAL" ile aynı parse."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        m = c.get_symbol_meta("ETHUSDT")
+        assert m.min_notional == 5.0
+        assert m.lot_size == 0.001
+    finally:
+        patcher.stop()
+
+
+def test_get_symbol_meta_unknown_symbol_raises():
+    """Cache'te yoksa SymbolNotFound raise et."""
+    from smc_engine.integrations.binance.order_client import SymbolNotFound
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        with pytest.raises(SymbolNotFound, match="DOGEUSDT"):
+            c.get_symbol_meta("DOGEUSDT")
+    finally:
+        patcher.stop()
+
+
+def test_get_symbol_meta_ttl_refresh_after_expiry():
+    """TTL süresi geçince exchange_info tekrar fetch edilir."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        c.get_symbol_meta("BTCUSDT")
+        # TTL'i sıfırla → bir sonraki çağrı re-fetch
+        c._exchange_info_fetched_at = None
+        c.get_symbol_meta("BTCUSDT")
+        assert mock.futures_exchange_info.call_count == 2
+    finally:
+        patcher.stop()

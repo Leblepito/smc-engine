@@ -47,6 +47,8 @@ from smc_engine.execution._base import (
     TimeInForce,
 )
 from smc_engine.execution.mainnet_guard import MainnetGuard
+from smc_engine.integrations.binance.symbols import extract_symbol_meta, normalize_symbol
+from smc_engine.types import SymbolMeta
 
 if False:  # TYPE_CHECKING workaround for circular import safety
     from smc_engine.config import SMCConfig  # noqa: F401
@@ -55,6 +57,14 @@ if False:  # TYPE_CHECKING workaround for circular import safety
 # ============================================================
 # Errors
 # ============================================================
+
+
+class SymbolNotFound(Exception):
+    """Sembol Binance futures exchange_info'da bulunamadı."""
+
+    def __init__(self, symbol: str) -> None:
+        super().__init__(f"{symbol} not in Binance futures exchange_info")
+        self.symbol = symbol
 
 
 class BinanceOrderError(Exception):
@@ -164,6 +174,10 @@ class BinanceOrderClient:
         self.testnet = testnet
         self.rate_limit_buffer = rate_limit_buffer
         self._client = Client(api_key=api_key, api_secret=api_secret, testnet=testnet)
+        # exchange_info cache (Spec §4.1 / §10.1 — calc_position_size girişi)
+        self._symbol_meta_cache: dict[str, SymbolMeta] = {}
+        self._exchange_info_fetched_at: Optional[datetime] = None
+        self._exchange_info_ttl_seconds: int = 86400  # 24h refresh
 
     # ---------------- env-based factory ----------------
 
@@ -298,6 +312,41 @@ class BinanceOrderClient:
             available_margin=float(resp.get("availableBalance", "0")),
             used_margin=float(resp.get("totalInitialMargin", "0")),
         )
+
+    # ---------------- exchange_info / symbol meta ----------------
+
+    def get_symbol_meta(self, symbol: str) -> SymbolMeta:
+        """``SymbolMeta`` döner; 24h TTL'li in-memory cache.
+
+        İlk çağrı / TTL bitiminde ``futures_exchange_info`` REST çağrısı yapar
+        ve tüm sembolleri parse eder. Sembol bulunamazsa ``SymbolNotFound``.
+        """
+        norm = normalize_symbol(symbol)
+        needs_refresh = (
+            self._exchange_info_fetched_at is None
+            or (datetime.now(tz=timezone.utc).replace(tzinfo=None)
+                - self._exchange_info_fetched_at).total_seconds()
+            > self._exchange_info_ttl_seconds
+        )
+        if needs_refresh:
+            self._refresh_exchange_info()
+        meta = self._symbol_meta_cache.get(norm)
+        if meta is None:
+            raise SymbolNotFound(norm)
+        return meta
+
+    def _refresh_exchange_info(self) -> None:
+        info = self._call_with_retry(self._client.futures_exchange_info)
+        cache: dict[str, SymbolMeta] = {}
+        for entry in info.get("symbols", []):
+            sym = entry.get("symbol", "")
+            if not sym:
+                continue
+            meta = extract_symbol_meta({"symbols": [entry]}, sym)
+            if meta is not None:
+                cache[sym] = meta
+        self._symbol_meta_cache = cache
+        self._exchange_info_fetched_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
     # ---------------- leverage + margin ----------------
 

@@ -135,3 +135,53 @@ def test_execution_disabled_skips_validation():
     mod = _load_run_live_module()
     # raise etmemeli — execution kapalı, validation skip
     mod._validate_execution_config(cfg)
+
+
+# ============================================================
+# Symbols precedence — execution.symbols > live.symbols
+# (5A walking skeleton: BTCUSDT only; sub-proje #2 fallback)
+# ============================================================
+
+
+def test_resolve_symbols_execution_takes_precedence_when_enabled():
+    """execution.enabled=True + execution.symbols dolu → execution.symbols kullanılır."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    cfg.execution_enabled = True
+    cfg.execution_symbols = ["BTCUSDT"]
+    cfg.live_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    mod = _load_run_live_module()
+    assert mod._resolve_symbols(cfg) == ["BTCUSDT"]
+
+
+def test_resolve_symbols_fallback_to_live_when_execution_symbols_empty():
+    """execution.enabled=True ama execution.symbols=[] → live.symbols fallback."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    cfg.execution_enabled = True
+    cfg.execution_symbols = []
+    cfg.live_symbols = ["BTCUSDT", "ETHUSDT"]
+    mod = _load_run_live_module()
+    assert mod._resolve_symbols(cfg) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_resolve_symbols_uses_live_when_execution_disabled():
+    """execution.enabled=False → execution.symbols dolu olsa bile live.symbols (sub-proje #2 davranışı)."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    cfg.execution_enabled = False
+    cfg.execution_symbols = ["BTCUSDT"]
+    cfg.live_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    mod = _load_run_live_module()
+    assert mod._resolve_symbols(cfg) == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def test_resolve_symbols_returns_empty_when_both_empty():
+    """Her ikisi de boş → boş liste döner; main() boş listeyi error olarak yakalar."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    cfg.execution_enabled = True
+    cfg.execution_symbols = []
+    cfg.live_symbols = []
+    mod = _load_run_live_module()
+    assert mod._resolve_symbols(cfg) == []

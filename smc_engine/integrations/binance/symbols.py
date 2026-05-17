@@ -27,12 +27,19 @@ def extract_symbol_meta(exchange_info: dict, symbol: str) -> Optional[SymbolMeta
         tick_size = 0.0
         lot_size = 0.0
         min_qty = 0.0
+        min_notional = 0.0
         for flt in entry.get("filters", []):
-            if flt.get("filterType") == "PRICE_FILTER":
+            ftype = flt.get("filterType")
+            if ftype == "PRICE_FILTER":
                 tick_size = float(flt.get("tickSize", "0"))
-            elif flt.get("filterType") == "LOT_SIZE":
+            elif ftype == "LOT_SIZE":
                 lot_size = float(flt.get("stepSize", "0"))
                 min_qty = float(flt.get("minQty", "0"))
+            elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                # Binance USDT-M: çoğunlukla "notional" key; eski API'lerde
+                # "minNotional". İkisini de dene; ilki bulunan kullanılır.
+                raw = flt.get("notional", flt.get("minNotional", "0"))
+                min_notional = float(raw)
         return SymbolMeta(
             symbol=sym,
             tick_size=tick_size,
@@ -40,5 +47,6 @@ def extract_symbol_meta(exchange_info: dict, symbol: str) -> Optional[SymbolMeta
             min_qty=min_qty,
             price_precision=int(entry.get("pricePrecision", 0)),
             qty_precision=int(entry.get("quantityPrecision", 0)),
+            min_notional=min_notional,
         )
     return None
