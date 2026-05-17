@@ -32,14 +32,14 @@ fi
 EXISTING=$(curl -sS -H "Authorization: Bearer $HCLOUD_TOKEN" \
     "https://api.hetzner.cloud/v1/servers?name=${SERVER_NAME}")
 EXISTING_IP=$(python3 -c "
-import json,sys
-d = json.loads(open('/dev/stdin').read())
+import json, sys
+d = json.loads(sys.stdin.read())
 s = d.get('servers') or []
 print(s[0]['public_net']['ipv4']['ip'] if s else '')" <<< "$EXISTING")
 if [[ -n "$EXISTING_IP" ]]; then
     EXISTING_ID=$(python3 -c "
-import json
-d = json.loads(open('/dev/stdin').read())
+import json, sys
+d = json.loads(sys.stdin.read())
 print(d['servers'][0]['id'])" <<< "$EXISTING")
     echo "EXISTS: ${SERVER_NAME} (id=${EXISTING_ID}, ip=${EXISTING_IP}) — skipping create"
     echo "VPS_IP=${EXISTING_IP}"
@@ -53,8 +53,8 @@ LOCAL_FP=$(ssh-keygen -lE md5 -f ~/.ssh/id_ed25519.pub | awk '{print $2}' | sed 
 
 KEYS=$(curl -sS -H "Authorization: Bearer $HCLOUD_TOKEN" https://api.hetzner.cloud/v1/ssh_keys)
 SSH_KEY_ID=$(python3 -c "
-import json
-d = json.loads(open('/dev/stdin').read())
+import json, sys
+d = json.loads(sys.stdin.read())
 for k in d.get('ssh_keys', []):
     if k['fingerprint'] == '${LOCAL_FP}':
         print(k['id']); break" <<< "$KEYS")
@@ -68,8 +68,8 @@ print(json.dumps({'name': 'smc-engine-deploy', 'public_key': '''${PUB_KEY}'''}))
         https://api.hetzner.cloud/v1/ssh_keys \
         -d "$KEY_PAYLOAD")
     SSH_KEY_ID=$(python3 -c "
-import json
-print(json.loads(open('/dev/stdin').read())['ssh_key']['id'])" <<< "$KEY_RESP")
+import json, sys
+print(json.loads(sys.stdin.read())['ssh_key']['id'])" <<< "$KEY_RESP")
 fi
 echo "Using SSH key id=${SSH_KEY_ID}"
 
@@ -96,8 +96,8 @@ RESP=$(curl -sS -X POST -H "Authorization: Bearer $HCLOUD_TOKEN" -H "Content-Typ
     https://api.hetzner.cloud/v1/servers -d "$PAYLOAD")
 
 python3 -c "
-import json,sys
-r = json.loads(open('/dev/stdin').read())
+import json, sys
+r = json.loads(sys.stdin.read())
 if r.get('error'):
     print('ERROR:', r['error']); sys.exit(2)
 s = r['server']
