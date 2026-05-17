@@ -21,6 +21,14 @@ from smc_engine.config import SMCConfig
 from smc_engine.execution.mainnet_guard import MainnetGuard, MainnetMode
 
 
+@pytest.fixture(autouse=True)
+def _reset_mainnet_cache():
+    """Cache is process-wide; reset between every test."""
+    MainnetGuard.reset_cache_for_tests()
+    yield
+    MainnetGuard.reset_cache_for_tests()
+
+
 # ============================================================
 # check() 4 kombinasyon
 # ============================================================
@@ -122,3 +130,29 @@ def test_5sec_delay_actually_5_seconds(monkeypatch):
                lambda s: seen.append(s)):
         MainnetGuard.check(cfg)
     assert seen == [5.0]
+
+
+def test_cached_after_first_check_no_double_delay(monkeypatch):
+    """Second check() in same process → no second 5sn delay (cached)."""
+    monkeypatch.setenv("SMC_ALLOW_LIVE", "1")
+    cfg = SMCConfig()
+    cfg.execution_live_enabled = True
+    seen: list[float] = []
+    with patch("smc_engine.execution.mainnet_guard._SLEEP",
+               lambda s: seen.append(s)):
+        MainnetGuard.check(cfg)
+        # Second call (e.g. from BinanceOrderClient) — must NOT sleep again
+        MainnetGuard.check(cfg)
+        MainnetGuard.is_approved(cfg)
+    assert seen == [5.0], f"expected single delay, got {seen}"
+
+
+def test_cache_isolation_between_tests_via_fixture(monkeypatch):
+    """The autouse _reset_mainnet_cache fixture must clear state."""
+    monkeypatch.delenv("SMC_ALLOW_LIVE", raising=False)
+    cfg = SMCConfig()
+    cfg.execution_live_enabled = False
+    # First test result was TESTNET; this is a fresh test, cache must be clear
+    with patch("smc_engine.execution.mainnet_guard._SLEEP", lambda s: None):
+        mode = MainnetGuard.check(cfg)
+    assert mode is MainnetMode.TESTNET

@@ -214,6 +214,14 @@ class PositionTracker:
         if not p.exists():
             return
         data = json.loads(p.read_text(encoding="utf-8"))
+        # Schema version check — incompatible versions raise rather than
+        # silently corrupt restart recovery.
+        file_version = data.get("version", 0)
+        if file_version != _VERSION:
+            raise ValueError(
+                f"PositionTracker state schema version mismatch: "
+                f"file={file_version}, expected={_VERSION}. Migrate manually."
+            )
         self._positions = {}
         for entry in data.get("positions", []):
             pos = self._deserialize(entry)

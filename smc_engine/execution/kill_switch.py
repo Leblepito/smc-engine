@@ -70,6 +70,12 @@ class KillSwitch:
         if not self.state_path.exists():
             return KillSwitchState()
         data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        file_version = data.get("version", 0)
+        if file_version != _VERSION:
+            raise ValueError(
+                f"KillSwitch state schema version mismatch: "
+                f"file={file_version}, expected={_VERSION}. Migrate manually."
+            )
         s = data.get("state", {})
         return KillSwitchState(
             consecutive_losses=int(s.get("consecutive_losses", 0)),
