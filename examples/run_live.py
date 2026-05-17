@@ -4,7 +4,7 @@ Kullanım (log-only, sub-proje #2):
     python examples/run_live.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --equity 10000
 
 Kullanım (execution, sub-proje #5A testnet):
-    SMC_ALLOW_LIVE=0 python examples/run_live.py --execution-enabled --symbols BTCUSDT
+    python examples/run_live.py --config config.yaml --execution-enabled
 
 Akış (Spec §3):
     APScheduler M15:05 → BinanceAdapter.fetch_ohlcv (D1, H4, M15)
@@ -36,7 +36,7 @@ try:
 except Exception:
     pass
 
-from smc_engine.config import SMCConfig
+from smc_engine.config import SMCConfig, load_config
 from smc_engine.integrations.binance.adapter import BinanceAdapter
 from smc_engine.integrations.binance.client import BinanceClient
 from smc_engine.live.runner import LiveRunner
@@ -58,94 +58,156 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _parse_args() -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
+    """Argparse parser builder — test edilebilir olsun diye ayrı."""
     cfg_defaults = SMCConfig()
-    p = argparse.ArgumentParser(description="SMC Engine live signal pipeline (log-only)")
+    p = argparse.ArgumentParser(
+        description="SMC Engine live signal pipeline (config-driven; log-only OR execution)"
+    )
+    p.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to config.yaml (default: ./config.yaml). Missing = SMCConfig defaults.",
+    )
     p.add_argument(
         "--symbols",
-        default=",".join(cfg_defaults.live_symbols),
-        help="Comma-separated symbol list (e.g. BTCUSDT,ETHUSDT)",
+        default=None,  # None → config'den al
+        help="Comma-separated symbol list. Overrides config.live_symbols + config.execution_symbols.",
     )
     p.add_argument(
         "--equity",
         type=float,
-        default=cfg_defaults.live_account_equity,
-        help="Account equity for R-sizing (log-only mode = static)",
+        default=None,
+        help="Account equity for R-sizing (display only in log-only mode). Overrides config.",
     )
     p.add_argument(
         "--log-dir",
-        default=cfg_defaults.live_log_dir,
-        help="JSONL log directory (auto-created)",
+        default=None,
+        help="JSONL log directory (auto-created). Overrides config.live_log_dir.",
     )
     p.add_argument(
         "--testnet",
         action="store_true",
-        help="Use Binance futures testnet (default: mainnet read-only)",
+        help="(legacy) Use Binance futures testnet for sub-proje #2 read path.",
     )
     p.add_argument(
         "--buffer-seconds",
         type=int,
-        default=cfg_defaults.live_scheduler_buffer_seconds,
-        help="Seconds after M15 close before tick fires",
+        default=None,
+        help="Seconds after M15 close before tick fires. Overrides config.",
     )
-    # Sub-proje #5A execution opt-in. Default False — runner sub-proje #2
-    # (log-only) davranışında kalır.
     p.add_argument(
         "--execution-enabled",
         action="store_true",
-        help="Enable order execution (Sub-proje #5A). Default: log-only.",
+        help="Force-enable order execution (Sub-proje #5A). "
+             "Overrides config.execution.enabled. If neither this flag nor config "
+             "enables it, runner stays in log-only mode.",
     )
-    return p.parse_args()
+    return p
 
 
-def main() -> int:
-    args = _parse_args()
+def _parse_args_with(argv: list[str]) -> argparse.Namespace:
+    """argparse helper for tests + main()."""
+    return _build_parser().parse_args(argv)
+
+
+def _validate_execution_config(config: SMCConfig) -> None:
+    """Sanity check before bringing up execution stack.
+
+    Combo guard: testnet=False + live_enabled=False = senseless config
+    (mainnet talep ediliyor ama 3-layer guard'ın 2. katmanı kapalı).
+    MainnetGuard zaten testnet'e düşürür ama bu sessiz override
+    confusing'tir; explicit error daha net.
+    """
+    if not config.execution_enabled:
+        return  # execution off — diğer alanlar önemsiz
+    if not config.execution_testnet and not config.execution_live_enabled:
+        raise RuntimeError(
+            "Geçersiz execution config: testnet=False (mainnet) + "
+            "live_enabled=False. Bu kombinasyon anlamsız — mainnet "
+            "guard'ın 2. katmanı kapalı olduğu için MainnetGuard zaten "
+            "TESTNET zorlardı ama explicit yanlış config'i bildirmek "
+            "daha güvenli. Çözüm: ya testnet=True yap (testnet smoke), "
+            "ya da live_enabled=True yap (mainnet smoke, SMC_ALLOW_LIVE=1 + "
+            "startup delay)."
+        )
+
+
+def _resolve_config(args: argparse.Namespace) -> SMCConfig:
+    """config.yaml + CLI override → effective SMCConfig."""
+    config_path = Path(args.config)
+    config = load_config(config_path) if config_path.exists() else SMCConfig()
+
+    # CLI override priority: arg > config > default
+    if args.symbols is not None:
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        # Symbols hem live (signal logger) hem execution (per-symbol stack) için
+        config.live_symbols = symbols
+        config.execution_symbols = symbols
+    if args.equity is not None:
+        config.live_account_equity = args.equity
+    if args.log_dir is not None:
+        config.live_log_dir = args.log_dir
+    if args.buffer_seconds is not None:
+        config.live_scheduler_buffer_seconds = args.buffer_seconds
+    if args.testnet:
+        # legacy sub-proje #2 testnet (read-only). Sub-proje #5A için
+        # execution_testnet kullanılır — config'den okunur, --testnet bağımsız.
+        config.binance_testnet = True
+    # CLI'da --execution-enabled True ise config'i override (config False olabilir)
+    # False ise (default), config'deki değeri korur.
+    if args.execution_enabled:
+        config.execution_enabled = True
+
+    return config
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args_with(argv if argv is not None else sys.argv[1:])
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     log = logging.getLogger("smc.live")
 
-    # API key kontrolü (public futures klines için zorunlu DEĞİL ama uyar)
-    if not os.environ.get("BINANCE_API_KEY") or not os.environ.get("BINANCE_API_SECRET"):
-        log.warning(
-            "BINANCE_API_KEY / BINANCE_API_SECRET set değil — public-only modda "
-            "çalışılacak (futures kline endpoint'leri çoğunlukla public). .env "
-            "dosyasına read-only key koymak rate-limit avantajı sağlar."
-        )
+    config = _resolve_config(args)
+    _validate_execution_config(config)
 
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    symbols = config.live_symbols
     if not symbols:
-        log.error("En az bir sembol gerekli: --symbols BTCUSDT,...")
+        log.error("En az bir sembol gerekli: config.live_symbols veya --symbols")
         return 2
 
-    config = SMCConfig()
-    config.live_symbols = symbols
-    config.live_account_equity = args.equity
-    config.live_log_dir = args.log_dir
-    config.binance_testnet = args.testnet
-    config.live_scheduler_buffer_seconds = args.buffer_seconds
-    config.execution_enabled = args.execution_enabled
+    log.info(
+        "starting live pipeline: symbols=%s log_dir=%s execution_enabled=%s "
+        "execution_testnet=%s execution_live_enabled=%s",
+        symbols, config.live_log_dir, config.execution_enabled,
+        config.execution_testnet, config.execution_live_enabled,
+    )
 
-    log.info("starting live pipeline: symbols=%s equity=%.2f log_dir=%s testnet=%s execution=%s",
-             symbols, args.equity, args.log_dir, args.testnet, args.execution_enabled)
+    # API key uyarı (sub-proje #2 read path için)
+    if not os.environ.get("BINANCE_API_KEY") or not os.environ.get("BINANCE_API_SECRET"):
+        log.warning(
+            "BINANCE_API_KEY / BINANCE_API_SECRET set değil — sub-proje #2 "
+            "read path public-only modda (kline endpoint'leri çoğunlukla public)."
+        )
 
     client = BinanceClient(
-        testnet=args.testnet, rate_limit_buffer=config.binance_rate_limit_buffer
+        testnet=config.binance_testnet,
+        rate_limit_buffer=config.binance_rate_limit_buffer,
     )
     adapter = BinanceAdapter(client=client)
 
     # Sub-proje #5A: execution stack opt-in
     order_manager_per_symbol: dict[str, object] = {}
     audit_log = None
-    if args.execution_enabled:
+    if config.execution_enabled:
         from smc_engine.execution.audit_log import AuditLog
         from smc_engine.execution.kill_switch import KillSwitch
         from smc_engine.execution.mainnet_guard import MainnetGuard, MainnetMode
         from smc_engine.execution.order_manager import OrderManager
         from smc_engine.execution.position_tracker import PositionTracker
         from smc_engine.integrations.binance.order_client import BinanceOrderClient
-        from pathlib import Path as _P
 
         # Mainnet guard ON-START — 3 katman; geçemezse TESTNET zorla
         mainnet_mode = MainnetGuard.check(config)
@@ -153,8 +215,8 @@ def main() -> int:
         log.info("execution mainnet guard: mode=%s use_testnet=%s",
                  mainnet_mode.value, use_testnet)
 
-        # Convention (2026-05-17): testnet → BINANCE_TESTNET_API_KEY/SECRET,
-        # mainnet → BINANCE_API_KEY/SECRET. from_env() seçimi otomatik yapar.
+        # from_env: testnet → BINANCE_TESTNET_API_KEY/SECRET,
+        # mainnet → BINANCE_API_KEY/SECRET (otomatik)
         order_client = BinanceOrderClient.from_env(
             testnet=use_testnet,
             rate_limit_buffer=config.binance_rate_limit_buffer,
@@ -170,13 +232,21 @@ def main() -> int:
             consecutive_loss_threshold=config.execution_kill_switch_consecutive_losses,
             daily_loss_threshold=config.execution_kill_switch_daily_loss_dollar,
             equity_minimum=config.execution_kill_switch_equity_minimum,
-            state_path=_P(config.execution_state_dir) / "kill_switch_state.json",
+            state_path=Path(config.execution_state_dir) / "kill_switch_state.json",
             audit_log=audit_log,
+        )
+        log.info(
+            "execution stack initialized: order_client=BinanceOrderClient(testnet=%s) "
+            "kill_switch(consec_losses=%d, daily_loss=$%.2f, equity_min=$%.2f)",
+            use_testnet,
+            config.execution_kill_switch_consecutive_losses,
+            config.execution_kill_switch_daily_loss_dollar,
+            config.execution_kill_switch_equity_minimum,
         )
 
         for sym in symbols:
             tracker = PositionTracker()
-            state_file = _P(config.execution_state_dir) / f"positions-{sym}.json"
+            state_file = Path(config.execution_state_dir) / f"positions-{sym}.json"
             tracker.load_state(state_file)
             order_manager_per_symbol[sym] = OrderManager(
                 order_client=order_client,
@@ -185,26 +255,24 @@ def main() -> int:
                 kill_switch=kill_switch,
                 config=config,
             )
+        log.info("OrderManager initialized for %d symbol(s): %s",
+                 len(symbols), symbols)
 
-    # Her sembol için ayrı logger (dosya adı aynı; symbol payload'da)
-    # — burada tek logger kullanıp sembolü emit edilen payload'da gösteriyoruz.
-    # Runner emit içinde sembol bilinmediği için per-symbol logger kullanmak daha temiz.
     loggers: dict[str, SignalLogger] = {
-        sym: SignalLogger(log_dir=args.log_dir, symbol=sym, timeframe=TimeFrame.M15)
+        sym: SignalLogger(log_dir=config.live_log_dir, symbol=sym, timeframe=TimeFrame.M15)
         for sym in symbols
     }
-
     runners: dict[str, LiveRunner] = {
         sym: LiveRunner(
             adapter=adapter,
             config=config,
             signal_logger=loggers[sym],
-            order_manager=order_manager_per_symbol.get(sym),  # None ise log-only
+            order_manager=order_manager_per_symbol.get(sym),
         )
         for sym in symbols
     }
 
-    scheduler = LiveScheduler(buffer_seconds=args.buffer_seconds)
+    scheduler = LiveScheduler(buffer_seconds=config.live_scheduler_buffer_seconds)
 
     def _tick():
         for sym, runner in runners.items():
@@ -212,9 +280,7 @@ def main() -> int:
                 runner.run_once(sym)
             except Exception as exc:
                 log.error("tick failed for %s: %s", sym, exc)
-        # Sub-proje #5A: after each M15 setup tick, also run execution polling
-        # (cheap; in-memory checks for any PENDING/ACTIVE orders).
-        if args.execution_enabled:
+        if config.execution_enabled:
             for sym, om in order_manager_per_symbol.items():
                 try:
                     om.tick_timeout_watcher()
@@ -224,7 +290,7 @@ def main() -> int:
 
     scheduler.start(_tick)
     log.info("scheduler started; M15 kapanış + %ds tetiklenecek. Ctrl+C ile durdur.",
-             args.buffer_seconds)
+             config.live_scheduler_buffer_seconds)
 
     stop_requested = {"v": False}
 

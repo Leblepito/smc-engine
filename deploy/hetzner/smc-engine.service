@@ -1,6 +1,7 @@
 [Unit]
-Description=SMC Engine live Binance signal pipeline (log-only)
+Description=SMC Engine live Binance signal pipeline (mode from config.yaml)
 Documentation=https://github.com/Leblepito/smc-engine/blob/main/docs/integrations/BINANCE.md
+Documentation=https://github.com/Leblepito/smc-engine/blob/main/docs/operations/EXECUTION_RUNBOOK.md
 After=network-online.target
 Wants=network-online.target
 # systemd ≥229: StartLimit* lives in [Unit], not [Service].
@@ -17,7 +18,11 @@ WorkingDirectory=/home/smc/smc-engine
 # systemd EnvironmentFile yine de ikinci hat olarak okur (idempotent).
 EnvironmentFile=/home/smc/smc-engine/.env
 
+# Mode kararı config.yaml'da:
+#   execution.enabled: false → sub-proje #2 davranışı (log-only)
+#   execution.enabled: true  → sub-proje #5A execution stack aktif
 ExecStart=/home/smc/smc-engine/.venv/bin/python /home/smc/smc-engine/examples/run_live.py \
+  --config /home/smc/smc-engine/config.yaml \
   --log-dir /home/smc/smc-engine/logs \
   --buffer-seconds 5
 
