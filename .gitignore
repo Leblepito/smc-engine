@@ -8,3 +8,6 @@ dist/
 logs/
 tmp_deploy/
 
+.coverage
+.coverage.*
+htmlcov/
