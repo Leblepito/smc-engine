@@ -112,10 +112,14 @@ class OrderManager:
 
         # 3. Place LIMIT order
         side = OrderSide.BUY if validated.setup.direction is Direction.LONG else OrderSide.SELL
+        # Bug A: HEDGE mode → positionSide LONG/SHORT zorunlu (-4061 önler).
+        # ONE_WAY → None (Binance default BOTH).
+        position_side = self._resolve_position_side(validated.setup.direction)
         req = OrderRequest(
             symbol=symbol, side=side, type=OrderType.LIMIT,
             qty=size, price=validated.setup.entry,
             time_in_force=TimeInForce.GTC,
+            position_side=position_side,
         )
         try:
             resp = self.order_client.place_order(req)
@@ -196,11 +200,18 @@ class OrderManager:
 
     def _on_fill(self, pending: TrackedPosition, fill: OrderResponse) -> None:
         opposite_side = OrderSide.SELL if pending.side == "BUY" else OrderSide.BUY
+        # HEDGE mode: exit order'lar aynı positionSide ile gönderilir (LONG
+        # pozisyonu SELL ile kapatır ama positionSide hala 'LONG' — yoksa -4061).
+        if self.config.execution_position_mode == "HEDGE":
+            position_side = "LONG" if pending.side == "BUY" else "SHORT"
+        else:
+            position_side = None
 
         # SL order (STOP_MARKET)
         sl_req = OrderRequest(
             symbol=pending.symbol, side=opposite_side, type=OrderType.STOP_MARKET,
             qty=pending.qty, stop_price=pending.sl,
+            position_side=position_side,
         )
         try:
             sl_resp = self.order_client.place_order(sl_req)
@@ -215,6 +226,7 @@ class OrderManager:
         tp_req = OrderRequest(
             symbol=pending.symbol, side=opposite_side, type=OrderType.LIMIT,
             qty=pending.qty, price=pending.tp, time_in_force=TimeInForce.GTC,
+            position_side=position_side,
         )
         try:
             tp_resp = self.order_client.place_order(tp_req)
@@ -281,6 +293,17 @@ class OrderManager:
             self._notify_kill_switch(active.order_id, pnl)
         # else: position closed but neither TP nor SL filled → manual / drift
         # Reconcile loop will handle.
+
+    def _resolve_position_side(self, direction: Direction) -> Optional[str]:
+        """HEDGE mode → 'LONG'/'SHORT'; ONE_WAY → None.
+
+        Bug A (2026-05-18): testnet/HEDGE hesaplarında positionSide zorunlu
+        (Binance -4061 önler). ONE_WAY hesaplarında positionSide gönderilmez
+        (varsayılan BOTH).
+        """
+        if self.config.execution_position_mode != "HEDGE":
+            return None
+        return "LONG" if direction is Direction.LONG else "SHORT"
 
     def _notify_kill_switch(self, order_id: str, pnl: float) -> None:
         try:

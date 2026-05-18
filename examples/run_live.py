@@ -260,6 +260,25 @@ def main(argv: list[str] | None = None) -> int:
             config.execution_kill_switch_equity_minimum,
         )
 
+        # Bug A (2026-05-18): hesabın gerçek position mode'u config ile uyuşuyor mu?
+        # Mismatch fatal değil — sadece warning; yine de -4061 ile reject olur.
+        try:
+            account_mode = order_client.get_position_mode()
+            cfg_mode = config.execution_position_mode
+            if account_mode == cfg_mode:
+                log.info("account position mode: %s (config match)", account_mode)
+            else:
+                log.warning(
+                    "POSITION MODE MISMATCH — Binance account=%s, config=%s. "
+                    "Order'lar Binance -4061 ile reject olacaktır. "
+                    "Çözüm: ya Binance'te 'Hedge Mode'/'One-way Mode' değiştir, "
+                    "ya config.execution.position_mode'u hesaba eşle.",
+                    account_mode, cfg_mode,
+                )
+        except Exception as exc:
+            # Network/auth hatası — fatal değil; smoke devam etsin.
+            log.warning("position_mode query failed (continuing): %s", exc)
+
         for sym in symbols:
             tracker = PositionTracker()
             state_file = Path(config.execution_state_dir) / f"positions-{sym}.json"

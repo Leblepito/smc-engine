@@ -266,6 +266,34 @@ def test_min_rr(config):
     assert isinstance(validate(edge, _account(), config), ValidatedSetup)
 
 
+def test_min_rr_tolerance_accepts_float_noise(config):
+    """Bug B (2026-05-18): float precision noise (1.4999999...) gate'i geçmeli.
+
+    setup_builder rr = (tp-entry)/sl_distance ile float bölme yapar; tp ve sl
+    quantize edilmiş olsa bile sonuç 1.4999999999999822 olabilir. min_rr=1.5
+    eşiğinde insan gözüyle "1.500" ama < olduğu için reject oluyordu.
+    Defense-in-depth: gate'e 1e-9 epsilon tolerans ekle.
+    """
+    noisy_just_below = _setup(rr=1.5 - 1e-12)  # 1.4999999999985... gibi
+    res = validate(noisy_just_below, _account(), config)
+    assert not isinstance(res, Rejection), (
+        f"Float-noise rr={noisy_just_below.rr!r} reject ediliyor — "
+        f"tolerance bozuk."
+    )
+
+
+def test_min_rr_real_reject_still_rejects(config):
+    """Tolerance defansı min_rr gate'inin gerçek işlevini bozmamalı.
+
+    1.49 (anlamlı) hala reject olmalı; sadece 1e-9 epsilon civarı noise tolere
+    edilir.
+    """
+    real_low = _setup(rr=1.49)
+    res = validate(real_low, _account(), config)
+    assert isinstance(res, Rejection)
+    assert res.gate == "min_rr"
+
+
 # ============================================================
 # 6 — pacal yasak / averaging ban (karar B)
 # ============================================================

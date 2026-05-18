@@ -64,6 +64,9 @@ class OrderRequest:
     price: Optional[float] = None  # LIMIT için; MARKET için None
     stop_price: Optional[float] = None  # STOP_MARKET için
     time_in_force: TimeInForce = TimeInForce.GTC
+    # Hedge mode için "LONG" / "SHORT". One-way mode'da None (Binance default BOTH).
+    # Bug A 2026-05-18: testnet hesabı dualSidePosition=True → her order'da gerekli.
+    position_side: Optional[str] = None
 
 
 @dataclass

@@ -493,6 +493,97 @@ def test_error_mapping_percent_price_4131():
 # =========================================================
 
 
+# =========================================================
+# X1.7 — position_side support (Hedge vs One-way mode, Bug A -4061)
+# =========================================================
+
+
+def test_place_order_default_no_position_side_in_kwargs():
+    """One-way mode (default): OrderRequest.position_side=None → kwargs'a positionSide eklenmez."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_create_order.return_value = {
+            "orderId": 1, "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+            "origQty": "0.002", "price": "78329.30", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="BTCUSDT", side=OrderSide.BUY, type=OrderType.LIMIT,
+            qty=0.002, price=78329.30, time_in_force=TimeInForce.GTC,
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        assert "positionSide" not in kwargs
+    finally:
+        patcher.stop()
+
+
+def test_place_order_hedge_long_passes_position_side_LONG():
+    """Hedge mode + LONG entry: positionSide='LONG' kwargs'a girer."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_create_order.return_value = {
+            "orderId": 1, "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+            "origQty": "0.002", "price": "78329.30", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="BTCUSDT", side=OrderSide.BUY, type=OrderType.LIMIT,
+            qty=0.002, price=78329.30, time_in_force=TimeInForce.GTC,
+            position_side="LONG",
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        assert kwargs["positionSide"] == "LONG"
+        assert kwargs["side"] == "BUY"
+
+
+    finally:
+        patcher.stop()
+
+
+def test_place_order_hedge_short_passes_position_side_SHORT():
+    """Hedge mode + SHORT entry: positionSide='SHORT' kwargs'a girer."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_create_order.return_value = {
+            "orderId": 1, "symbol": "BTCUSDT", "side": "SELL", "type": "LIMIT",
+            "origQty": "0.002", "price": "80000", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="BTCUSDT", side=OrderSide.SELL, type=OrderType.LIMIT,
+            qty=0.002, price=80000.0, time_in_force=TimeInForce.GTC,
+            position_side="SHORT",
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        assert kwargs["positionSide"] == "SHORT"
+        assert kwargs["side"] == "SELL"
+    finally:
+        patcher.stop()
+
+
+def test_get_position_mode_returns_hedge_when_dual_side_position():
+    """get_position_mode dualSidePosition=True → 'HEDGE'."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_get_position_mode.return_value = {"dualSidePosition": True}
+        assert c.get_position_mode() == "HEDGE"
+    finally:
+        patcher.stop()
+
+
+def test_get_position_mode_returns_one_way_when_no_dual_side():
+    """get_position_mode dualSidePosition=False → 'ONE_WAY'."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_get_position_mode.return_value = {"dualSidePosition": False}
+        assert c.get_position_mode() == "ONE_WAY"
+    finally:
+        patcher.stop()
+
+
 def _exchange_info_fixture():
     """Minimal futures_exchange_info payload, 2 sembol, MIN_NOTIONAL + LOT_SIZE."""
     return {

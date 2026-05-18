@@ -27,6 +27,13 @@ execution:
   margin_mode: "isolated"
   order_timeout_minutes: 60
 
+  # Binance Futures account position mode — HESABIN GERÇEK MODUNA EŞLE.
+  # "ONE_WAY"  (default): tek pozisyon, positionSide=BOTH (gönderilmez)
+  # "HEDGE"   (testnet default): LONG/SHORT ayrı, positionSide gerekli
+  # Yanlış değer → Binance -4061 "Order's position side does not match user's setting".
+  # Boot'ta gerçek hesap mode'u sorgulanır + mismatch warning loglanır.
+  position_mode: "ONE_WAY"
+
   # Kill switch — $100 bütçe default'u (kullanıcı kararı 2026-05-17).
   # $25 bütçe için: daily_loss_dollar=5.0, equity_minimum=15.0
   kill_switch:

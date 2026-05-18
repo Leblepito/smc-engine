@@ -271,8 +271,20 @@ class BinanceOrderClient:
             kwargs["stopPrice"] = request.stop_price
         if request.type in (OrderType.LIMIT, OrderType.STOP_LIMIT):
             kwargs["timeInForce"] = request.time_in_force.value
+        # Hedge mode: positionSide zorunlu (Binance -4061 önler). One-way mode'da None.
+        if request.position_side is not None:
+            kwargs["positionSide"] = request.position_side
         resp = self._call_with_retry(self._client.futures_create_order, **kwargs)
         return _to_order_response(resp)
+
+    def get_position_mode(self) -> str:
+        """Hesabın futures position mode'unu döner — "HEDGE" | "ONE_WAY".
+
+        Binance ``futures_get_position_mode`` → ``{"dualSidePosition": bool}``.
+        True = HEDGE (LONG/SHORT ayrı), False = ONE_WAY (BOTH).
+        """
+        resp = self._call_with_retry(self._client.futures_get_position_mode)
+        return "HEDGE" if resp.get("dualSidePosition") else "ONE_WAY"
 
     def cancel_order(self, symbol: str, order_id: str) -> OrderResponse:
         resp = self._call_with_retry(

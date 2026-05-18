@@ -123,9 +123,15 @@ def _check_no_sl(setup: Setup) -> str | None:
 
 
 def _check_min_rr(setup: Setup, config) -> str | None:
-    """Min R:R gate — rr < min_rr -> kotu setup (SL cok uzak / TP cok yakin)."""
+    """Min R:R gate — rr < min_rr -> kotu setup (SL cok uzak / TP cok yakin).
+
+    Bug B (2026-05-18): setup_builder rr float-noise (1.4999999999999822)
+    setup_builder tarafinda quantize edildi; defense-in-depth icin burada da
+    1e-9 epsilon tolerance — ileride baska hesap noktasinda noise olusursa
+    gate yanlis red etmesin.
+    """
     min_rr = getattr(config, "min_rr", 1.5)
-    if setup.rr < min_rr:
+    if setup.rr < min_rr - 1e-9:
         return f"R:R yetersiz: {setup.rr:.3f} < {min_rr} (min_rr)"
     return None
 

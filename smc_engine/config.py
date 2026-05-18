@@ -184,6 +184,10 @@ class SMCConfig:
     execution_leverage: int = 10
     execution_margin_mode: str = "isolated"
     execution_order_timeout_minutes: int = 60
+    # Bug A (2026-05-18): hedge mode hesaplarında positionSide zorunlu (-4061).
+    # "ONE_WAY" (default): positionSide gönderilmez (Binance default BOTH).
+    # "HEDGE": LONG/SHORT positionSide otomatik bağlanır.
+    execution_position_mode: str = "ONE_WAY"
     # Kill switch eşikleri — $100 budget (kullanıcı kararı 2026-05-17):
     # 5A bütçesi $25 → $100 yükseltildi; daily_loss + equity_minimum scale-up.
     execution_kill_switch_consecutive_losses: int = 3
@@ -232,6 +236,7 @@ _SUBMAP_FIELDS = (
     "execution_leverage",
     "execution_margin_mode",
     "execution_order_timeout_minutes",
+    "execution_position_mode",
     "execution_kill_switch_consecutive_losses",
     "execution_kill_switch_daily_loss_dollar",
     "execution_kill_switch_equity_minimum",
@@ -268,6 +273,7 @@ _EXECUTION_KEYS = {
     "leverage": "execution_leverage",
     "margin_mode": "execution_margin_mode",
     "order_timeout_minutes": "execution_order_timeout_minutes",
+    "position_mode": "execution_position_mode",
     "fill_polling_seconds": "execution_fill_polling_seconds",
     "reconcile_loop_seconds": "execution_reconcile_loop_seconds",
     "audit_log_dir": "execution_audit_log_dir",

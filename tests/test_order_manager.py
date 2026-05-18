@@ -258,6 +258,59 @@ def test_process_setup_kill_switch_signal_triggers_external(tmp_path):
 
 
 # ============================================================
+# Bug A (2026-05-18): position_mode wiring (Hedge vs One-way)
+# ============================================================
+
+
+def test_process_setup_one_way_mode_omits_position_side(tmp_path):
+    """Default ONE_WAY: OrderRequest.position_side=None."""
+    om, foc, _, _, _ = _build_manager(tmp_path)
+    om.config.execution_position_mode = "ONE_WAY"
+    vs = _make_validated(direction=Direction.LONG)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    assert foc.placed[0].position_side is None
+
+
+def test_process_setup_hedge_mode_long_sets_position_side_LONG(tmp_path):
+    """HEDGE + LONG → entry order positionSide='LONG'."""
+    om, foc, _, _, _ = _build_manager(tmp_path)
+    om.config.execution_position_mode = "HEDGE"
+    vs = _make_validated(direction=Direction.LONG)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    assert foc.placed[0].position_side == "LONG"
+
+
+def test_process_setup_hedge_mode_short_sets_position_side_SHORT(tmp_path):
+    """HEDGE + SHORT → entry order positionSide='SHORT'."""
+    om, foc, _, _, _ = _build_manager(tmp_path)
+    om.config.execution_position_mode = "HEDGE"
+    vs = _make_validated(direction=Direction.SHORT)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    assert foc.placed[0].position_side == "SHORT"
+
+
+def test_on_fill_hedge_mode_sl_tp_orders_use_position_side(tmp_path):
+    """HEDGE + LONG fill → SL ve TP order'larında da positionSide='LONG'.
+
+    Kritik: SL/TP exit order'ları side='SELL' alır ama positionSide hala
+    'LONG' olmalı (aynı LONG pozisyonu kapatıyor). Yoksa -4061 burada da olur.
+    """
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    om.config.execution_position_mode = "HEDGE"
+    vs = _make_validated(direction=Direction.LONG)
+    at_bar = datetime(2026, 5, 17, 3, 15)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=at_bar)
+    # Entry order'ı fill et
+    pending = tracker.pending()[0]
+    foc.simulate_fill(pending.order_id, fill_price=78327.5, fill_qty=pending.qty)
+    om.tick_fill_polling()
+    # Üç order olmalı: entry + SL + TP. Hepsi positionSide='LONG'.
+    assert len(foc.placed) == 3
+    for req in foc.placed:
+        assert req.position_side == "LONG", f"order type={req.type} side={req.side} positionSide={req.position_side}"
+
+
+# ============================================================
 # Timeout watcher
 # ============================================================
 

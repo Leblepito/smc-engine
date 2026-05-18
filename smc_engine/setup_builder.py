@@ -78,6 +78,22 @@ _DEFAULT_TP_R_MULTIPLES = (1.5, 2.62, 4.23)
 _DEFAULT_SL_BAND_BUFFER_MULT = 0.25
 _DEFAULT_SL_ABS_BUFFER_PCT = 0.003
 
+
+# Bug B (2026-05-18): float bolme TP1/entry/SL'den 1.4999999999999822 gibi
+# noise uretebilir; min_rr=1.5 gate'inde "1.500" gozukse de < olur ve reject
+# edilir. Quantize ondalik 4'e (0.0001 cozunurluk pratik yeterli) — defense-in
+# -depth icin risk_guard'da ayri epsilon tolerance var.
+_RR_QUANTIZE_DIGITS = 4
+
+
+def _compute_rr(entry: float, sl_distance: float, tp1: float, direction) -> float:
+    """TP1/entry/SL'den R:R hesabi — float noise'a karsi 4 ondalikta quantize."""
+    if direction == Direction.LONG:
+        raw = (tp1 - entry) / sl_distance
+    else:
+        raw = (entry - tp1) / sl_distance
+    return round(raw, _RR_QUANTIZE_DIGITS)
+
 # --- OTE (Optimal Trade Entry) bolgesi: discount/premium icinde 0.618-0.786 ---
 _DEFAULT_OTE_LOW = 0.618
 _DEFAULT_OTE_HIGH = 0.786
@@ -550,10 +566,7 @@ def build(picture: MarketPicture, config) -> Optional[Setup]:
     tp_weights = list(_cfg_tp_weights(config))
 
     # rr: TP1'e gore (entry-SL = 1R).
-    if direction == Direction.LONG:
-        rr = (tp[0] - entry) / sl_distance
-    else:
-        rr = (entry - tp[0]) / sl_distance
+    rr = _compute_rr(entry=entry, sl_distance=sl_distance, tp1=tp[0], direction=direction)
 
     # --- 6. Confirmation baglama ---
     confirmation = _bind_confirmation(picture, direction)

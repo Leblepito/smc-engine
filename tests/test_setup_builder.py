@@ -382,6 +382,38 @@ def test_deterministic(config):
 
 
 # ============================================================
+# Bug B (2026-05-18): rr float-noise quantization
+# ============================================================
+
+
+def test_compute_rr_quantized_long_no_float_noise():
+    """LONG: (tp1-entry)/sl_distance float noise içeriyor olsa bile 4 ondalıkta clean."""
+    from smc_engine.setup_builder import _compute_rr
+
+    # Üretim signal'inden alıntı (VPS log): entry=78329.3, sl=77435.5121,
+    # tp1=79669.98185 → raw rr = 1.4999999999999822. Quantize sonrası 1.5.
+    entry, sl, tp1 = 78329.3, 77435.5121, 79669.98185
+    sl_distance = abs(entry - sl)
+    rr = _compute_rr(entry=entry, sl_distance=sl_distance, tp1=tp1, direction=Direction.LONG)
+    assert rr == 1.5, f"quantize bozuk: rr={rr!r}"
+
+
+def test_compute_rr_quantized_short_no_float_noise():
+    """SHORT: simetrik — (entry-tp1)/sl_distance noise temiz olmalı."""
+    from smc_engine.setup_builder import _compute_rr
+
+    # LONG örneğinin (78329.3, sl=entry-893.7879, tp1=entry+1340.68185) tam
+    # simetriği — SHORT'ta SL üstte, TP altta. raw rr = 1.5000000000000162
+    # (üst noise — quantize 1.5'e indirir).
+    entry = 78329.3
+    sl = entry + 893.7879
+    tp1 = entry - 1340.68185
+    sl_distance = abs(entry - sl)
+    rr = _compute_rr(entry=entry, sl_distance=sl_distance, tp1=tp1, direction=Direction.SHORT)
+    assert rr == 1.5, f"quantize bozuk: rr={rr!r}"
+
+
+# ============================================================
 # Premium/discount faktoru — OTE
 # ============================================================
 
