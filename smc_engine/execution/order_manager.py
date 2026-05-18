@@ -199,6 +199,21 @@ class OrderManager:
                 self._on_position_close(p)
 
     def _on_fill(self, pending: TrackedPosition, fill: OrderResponse) -> None:
+        """Atomik SL+TP placement (Bug D 2026-05-18).
+
+        Main LIMIT entry fill oldu — bu noktada pozisyon zaten Binance'te
+        açık. SL veya TP placement fail ederse pozisyon korumasız kalır
+        (catastrophic risk). Davranış:
+
+        - SL fail → emergency MARKET close (opposite side) + tracker.on_reject
+          + audit ORDER_ROLLBACK. Yeniden deneme YOK.
+        - SL ok, TP fail → SL cancel + emergency MARKET close + tracker.on_reject
+          + audit ORDER_ROLLBACK.
+        - İkisi de ok → tracker.on_fill (ACTIVE), normal akış.
+
+        Önceki davranış (Bug D): SL fail → return → tracker hala PENDING →
+        polling bir sonraki tick'te yine FILLED görür → sonsuz SL retry.
+        """
         opposite_side = OrderSide.SELL if pending.side == "BUY" else OrderSide.BUY
         # HEDGE mode: exit order'lar aynı positionSide ile gönderilir (LONG
         # pozisyonu SELL ile kapatır ama positionSide hala 'LONG' — yoksa -4061).
@@ -207,7 +222,7 @@ class OrderManager:
         else:
             position_side = None
 
-        # SL order (STOP_MARKET)
+        # 1) SL order (STOP_MARKET)
         sl_req = OrderRequest(
             symbol=pending.symbol, side=opposite_side, type=OrderType.STOP_MARKET,
             qty=pending.qty, stop_price=pending.sl,
@@ -216,13 +231,15 @@ class OrderManager:
         try:
             sl_resp = self.order_client.place_order(sl_req)
         except BinanceOrderError as exc:
-            self.audit_log.emit(
-                "SL_ORDER_FAILED", order_id=pending.order_id,
-                error_code=exc.code, message=exc.message,
+            self._rollback_filled_order(
+                pending=pending, opposite_side=opposite_side,
+                position_side=position_side,
+                reason="SL_PLACEMENT_FAILED",
+                error_code=exc.code, error_message=exc.message,
             )
             return
 
-        # TP order (LIMIT)
+        # 2) TP order (LIMIT)
         tp_req = OrderRequest(
             symbol=pending.symbol, side=opposite_side, type=OrderType.LIMIT,
             qty=pending.qty, price=pending.tp, time_in_force=TimeInForce.GTC,
@@ -231,12 +248,24 @@ class OrderManager:
         try:
             tp_resp = self.order_client.place_order(tp_req)
         except BinanceOrderError as exc:
-            self.audit_log.emit(
-                "TP_ORDER_FAILED", order_id=pending.order_id,
-                error_code=exc.code, message=exc.message,
+            # SL koyduk ama TP fail — SL cancel + emergency close.
+            try:
+                self.order_client.cancel_order(pending.symbol, sl_resp.order_id)
+            except BinanceOrderError as cancel_exc:
+                self.audit_log.emit(
+                    "ROLLBACK_SL_CANCEL_FAILED", order_id=pending.order_id,
+                    sl_order_id=sl_resp.order_id,
+                    error_code=cancel_exc.code, message=cancel_exc.message,
+                )
+            self._rollback_filled_order(
+                pending=pending, opposite_side=opposite_side,
+                position_side=position_side,
+                reason="TP_PLACEMENT_FAILED",
+                error_code=exc.code, error_message=exc.message,
             )
             return
 
+        # 3) Happy path
         self.position_tracker.on_fill(
             pending.order_id, sl_order_id=sl_resp.order_id,
             tp_order_id=tp_resp.order_id,
@@ -248,6 +277,51 @@ class OrderManager:
             fill_price=fill.fill_price, fill_qty=fill.fill_qty,
             slippage=fill.fill_price - pending.entry,
             sl_order_id=sl_resp.order_id, tp_order_id=tp_resp.order_id,
+        )
+
+    def _rollback_filled_order(
+        self,
+        *,
+        pending: TrackedPosition,
+        opposite_side: OrderSide,
+        position_side: Optional[str],
+        reason: str,
+        error_code: int,
+        error_message: str,
+    ) -> None:
+        """Emergency close (MARKET opposite) + ABORTED + audit ROLLBACK.
+
+        Main LIMIT fill olduktan sonra SL veya TP placement başarısız oldu →
+        pozisyon korumasız. MARKET ters order ile derhal kapat; başarılı/
+        başarısız ABORTED state'e geç (polling retry önlemek için zorunlu).
+        """
+        emergency_filled = False
+        try:
+            close_req = OrderRequest(
+                symbol=pending.symbol, side=opposite_side, type=OrderType.MARKET,
+                qty=pending.qty, position_side=position_side,
+            )
+            self.order_client.place_order(close_req)
+            emergency_filled = True
+        except BinanceOrderError as close_exc:
+            # Emergency close da fail etti — manuel müdahale şart. Reconcile
+            # loop drift yakalayıp kill switch tetikleyecek; biz ABORTED'a
+            # yine de geçiyoruz, polling sonsuz retry yapmasın.
+            self.audit_log.emit(
+                "ROLLBACK_EMERGENCY_CLOSE_FAILED",
+                order_id=pending.order_id,
+                error_code=close_exc.code, message=close_exc.message,
+            )
+
+        # Tracker'ı ABORTED'a al — polling bir daha bu order'a dokunmaz.
+        # PENDING → ABORTED legal transition (on_reject).
+        self.position_tracker.on_reject(pending.order_id, reason=reason)
+
+        self.audit_log.emit(
+            "ORDER_ROLLBACK",
+            order_id=pending.order_id, symbol=pending.symbol,
+            reason=reason, error_code=error_code, message=error_message,
+            emergency_close_placed=emergency_filled,
         )
 
     def _on_position_close(self, active: TrackedPosition) -> None:

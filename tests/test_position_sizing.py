@@ -10,8 +10,39 @@ from smc_engine.execution.position_sizing import (
     InvalidStopLoss,
     OrderSizeBelowMinimum,
     calc_position_size,
+    quantize_to_tick,
 )
 from smc_engine.types import SymbolMeta
+
+
+# ============================================================
+# Bug C (2026-05-18): quantize_to_tick — Binance -1111 önler
+# ============================================================
+
+
+def test_quantize_to_tick_btc_with_long_float_noise():
+    """sl=77217.01299999999 + tick=0.10 → 77217.0 (incident'taki gerçek değer)."""
+    assert quantize_to_tick(77217.01299999999, 0.10) == 77217.0
+
+
+def test_quantize_to_tick_already_on_grid_passthrough():
+    """Tam grid'de olan değer aynen döner."""
+    assert quantize_to_tick(77585.0, 0.10) == 77585.0
+
+
+def test_quantize_to_tick_half_down_conservative():
+    """0.05 → HALF_DOWN ile 0.0'a iner (ROUND_HALF_DOWN: 0.5 → 0)."""
+    assert quantize_to_tick(0.05, 0.10) == 0.0
+
+
+def test_quantize_to_tick_zero_tick_size_no_op():
+    """tick_size <= 0 → no-op (defensive)."""
+    assert quantize_to_tick(123.456, 0.0) == 123.456
+
+
+def test_quantize_to_tick_tp_array_value():
+    """TP1 fiyatı (incident'taki) 78287.6825 + tick=0.10 → 78287.7."""
+    assert quantize_to_tick(78287.6825, 0.10) == 78287.7
 
 
 def _btc_meta(min_notional: float = 5.0):

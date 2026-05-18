@@ -65,9 +65,17 @@ class FakeOrderClient:
         # Test hooks
         self.place_order_side_effect: Optional[Exception] = None
         self._fail_count = 0
+        # Bug D testleri: belirli OrderType için fail injection (örn. SADECE
+        # STOP_MARKET fail etsin, LIMIT entry başarılı geçsin)
+        self.fail_on_type: Optional[OrderType] = None
+        self.fail_on_type_exception: Optional[Exception] = None
 
     def place_order(self, request: OrderRequest) -> OrderResponse:
         self.placed.append(request)
+        if (self.fail_on_type is not None
+                and request.type is self.fail_on_type
+                and self.fail_on_type_exception is not None):
+            raise self.fail_on_type_exception
         if self.place_order_side_effect is not None:
             self._fail_count += 1
             raise self.place_order_side_effect
@@ -308,6 +316,146 @@ def test_on_fill_hedge_mode_sl_tp_orders_use_position_side(tmp_path):
     assert len(foc.placed) == 3
     for req in foc.placed:
         assert req.position_side == "LONG", f"order type={req.type} side={req.side} positionSide={req.position_side}"
+
+
+# ============================================================
+# Bug D (2026-05-18): Atomic SL/TP placement + rollback
+# Sebep: Production incident — SL place fail → main order PENDING kalıyor,
+# polling sonsuz retry yapıyor, fiyat seviyeye gelince SL'siz position açılıyor.
+# Beklenen: fail → main cancel + emergency close + tracker ABORTED + audit
+# ROLLBACK; bir daha asla retry edilmez.
+# ============================================================
+
+
+def test_process_setup_does_not_place_sl_before_fill(tmp_path):
+    """process_setup sadece LIMIT entry koyar; SL ve TP fill GELENE KADAR BEKLENMELI."""
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    vs = _make_validated()
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    # Yalnızca 1 order (LIMIT entry) — SL/TP placement YOK.
+    assert len(foc.placed) == 1
+    assert foc.placed[0].type is OrderType.LIMIT
+    # Tracker'da PENDING; ACTIVE'e geçmedi.
+    assert len(tracker.pending()) == 1
+    assert len(tracker.active()) == 0
+
+
+def test_on_fill_places_sl_and_tp_atomically_on_success(tmp_path):
+    """Fill geldiğinde SL+TP başarıyla atomik konur → tracker ACTIVE."""
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    vs = _make_validated()
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    pending = tracker.pending()[0]
+    foc.simulate_fill(pending.order_id, fill_price=78327.5, fill_qty=pending.qty)
+    om.tick_fill_polling()
+    # Entry + SL + TP = 3 order
+    assert len(foc.placed) == 3
+    assert len(tracker.active()) == 1
+    assert len(tracker.pending()) == 0
+
+
+def test_on_fill_sl_failure_rolls_back_main_order(tmp_path):
+    """SL place fail → main fill'i emergency close + tracker ABORTED + audit ROLLBACK.
+
+    Bu Bug D'nin core senaryosu. Önceki davranış: SL fail → return → main
+    pozisyon SL'siz açık kalır.
+    """
+    om, foc, tracker, audit, _ = _build_manager(tmp_path)
+    vs = _make_validated()
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    pending = tracker.pending()[0]
+    foc.simulate_fill(pending.order_id, fill_price=78327.5, fill_qty=pending.qty)
+
+    # SL placement fail injection (-1111 Precision is over the maximum)
+    foc.fail_on_type = OrderType.STOP_MARKET
+    foc.fail_on_type_exception = BinanceOrderError(
+        code=-1111, message="Precision is over the maximum.", retryable=False,
+    )
+
+    om.tick_fill_polling()
+
+    # 1) Tracker ABORTED (NOT PENDING, NOT ACTIVE — finalized)
+    assert len(tracker.pending()) == 0, "PENDING kalmamalı (polling sonsuz retry yapardı)"
+    assert len(tracker.active()) == 0, "SL/TP eksikse ACTIVE'e geçmemeli"
+    aborted = tracker.closed_or_aborted()
+    assert len(aborted) == 1
+    assert aborted[0].abort_reason and "SL" in aborted[0].abort_reason
+
+    # 2) Emergency close: SL fail sonrası market exit denenmiş — opposite side MARKET
+    #    LIMIT BUY entry → emergency SELL MARKET
+    market_exits = [r for r in foc.placed if r.type is OrderType.MARKET]
+    assert len(market_exits) == 1, "emergency MARKET close emri eksik"
+    assert market_exits[0].side is OrderSide.SELL
+
+    # 3) Audit ROLLBACK
+    log_files = list((tmp_path / "audit").glob("trades-*.jsonl"))
+    content = log_files[0].read_text()
+    assert "ORDER_ROLLBACK" in content
+
+
+def test_on_fill_tp_failure_rolls_back_after_sl_placed(tmp_path):
+    """SL başarılı, TP fail → SL cancel + emergency close + tracker ABORTED."""
+    om, foc, tracker, audit, _ = _build_manager(tmp_path)
+    vs = _make_validated()
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    pending = tracker.pending()[0]
+    foc.simulate_fill(pending.order_id, fill_price=78327.5, fill_qty=pending.qty)
+
+    # TP fail (LIMIT exit). NOT: SL de LIMIT type değil STOP_MARKET — fail_on_type
+    # LIMIT olursa hem entry hem TP fail eder. O yüzden TP placement'i ayrı işaretle.
+    # Strateji: SL başarılı (STOP_MARKET geçer), sonra TP (LIMIT) için fail set et.
+    original_place = foc.place_order
+    call_state = {"n": 0}
+
+    def fail_third(req):
+        call_state["n"] += 1
+        # 1=entry (already placed), 2=SL (STOP_MARKET success), 3=TP (LIMIT) fail
+        # Aslında entry zaten placed listede; bu çağrı _on_fill içindeki SL+TP.
+        # 1. çağrı = SL, 2. çağrı = TP → 2. çağrıda fail.
+        if call_state["n"] == 2:
+            raise BinanceOrderError(code=-2010, message="REJECTED", retryable=False)
+        return original_place(req)
+
+    foc.place_order = fail_third  # type: ignore[assignment]
+
+    om.tick_fill_polling()
+
+    # ABORTED — TP fail → SL cancel + main emergency close + ABORTED
+    aborted = tracker.closed_or_aborted()
+    assert len(aborted) == 1
+    assert aborted[0].abort_reason and "TP" in aborted[0].abort_reason
+
+    # Audit ROLLBACK
+    log_files = list((tmp_path / "audit").glob("trades-*.jsonl"))
+    content = log_files[0].read_text()
+    assert "ORDER_ROLLBACK" in content
+
+
+def test_aborted_state_not_retried_by_polling(tmp_path):
+    """ABORTED state'te polling SL retry YAPMAMALI (önceki davranış sonsuz retry idi)."""
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    vs = _make_validated()
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 17, 3, 15))
+    pending = tracker.pending()[0]
+    foc.simulate_fill(pending.order_id, fill_price=78327.5, fill_qty=pending.qty)
+
+    # SL fail → ABORTED beklenir
+    foc.fail_on_type = OrderType.STOP_MARKET
+    foc.fail_on_type_exception = BinanceOrderError(
+        code=-1111, message="Precision is over the maximum.", retryable=False,
+    )
+    om.tick_fill_polling()
+    placed_after_first = len(foc.placed)
+    aborted_count = len(tracker.closed_or_aborted())
+    assert aborted_count == 1
+
+    # SL injection KALDIRILSA bile bir sonraki polling tick'i ABORTED'a dokunmamalı.
+    foc.fail_on_type = None
+    om.tick_fill_polling()
+    om.tick_fill_polling()
+    om.tick_fill_polling()
+    # Yeni order GİTMEDİ — retry yok.
+    assert len(foc.placed) == placed_after_first, "ABORTED'a yeni SL/TP gönderildi (retry bug)"
 
 
 # ============================================================

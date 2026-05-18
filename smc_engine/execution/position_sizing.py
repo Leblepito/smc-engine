@@ -8,10 +8,33 @@ Decimal arithmetic where lot rounding matters (avoid binary FP surprises).
 
 from __future__ import annotations
 
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_DOWN, Decimal
 
 from smc_engine.execution._base import Account
 from smc_engine.types import SymbolMeta
+
+
+# ============================================================
+# Tick quantize — Bug C (2026-05-18): Binance -1111 "Precision is over
+# the maximum defined for this asset" tüm price/stop_price field'lerinde
+# tick_size'a hizalı olmalı. Float division (1.4999... gibi) ham float
+# kullansak da hassasiyet aşar.
+# ============================================================
+
+
+def quantize_to_tick(price: float, tick_size: float) -> float:
+    """Fiyatı tick_size grid'ine quantize et (HALF_DOWN, conservative).
+
+    tick_size <= 0 → no-op (defansif; quantize anlamsız).
+    Decimal aritmetik — ham float'ın binary surprise'larını engeller.
+    """
+    if tick_size <= 0:
+        return price
+    p = Decimal(str(price))
+    t = Decimal(str(tick_size))
+    # (p / t) integer'a yuvarla (HALF_DOWN), sonra t ile çarp.
+    n = (p / t).quantize(Decimal("1"), rounding=ROUND_HALF_DOWN)
+    return float(n * t)
 
 
 # ============================================================

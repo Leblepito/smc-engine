@@ -47,6 +47,7 @@ from smc_engine.execution._base import (
     TimeInForce,
 )
 from smc_engine.execution.mainnet_guard import MainnetGuard
+from smc_engine.execution.position_sizing import quantize_to_tick
 from smc_engine.integrations.binance.symbols import extract_symbol_meta, normalize_symbol
 from smc_engine.types import SymbolMeta
 
@@ -259,6 +260,15 @@ class BinanceOrderClient:
     # ---------------- write endpoints ----------------
 
     def place_order(self, request: OrderRequest) -> OrderResponse:
+        # Bug C (2026-05-18): symbol_meta.tick_size'a göre price/stop_price
+        # otomatik quantize — Binance -1111 "Precision is over the maximum"
+        # önler. Cache miss durumunda raw değer gönderilir (best-effort).
+        tick_size = 0.0
+        try:
+            tick_size = self.get_symbol_meta(request.symbol).tick_size
+        except Exception:
+            pass
+
         kwargs: dict = {
             "symbol": request.symbol,
             "side": request.side.value,
@@ -266,9 +276,15 @@ class BinanceOrderClient:
             "quantity": request.qty,
         }
         if request.price is not None:
-            kwargs["price"] = request.price
+            kwargs["price"] = (
+                quantize_to_tick(request.price, tick_size) if tick_size > 0
+                else request.price
+            )
         if request.stop_price is not None:
-            kwargs["stopPrice"] = request.stop_price
+            kwargs["stopPrice"] = (
+                quantize_to_tick(request.stop_price, tick_size) if tick_size > 0
+                else request.stop_price
+            )
         if request.type in (OrderType.LIMIT, OrderType.STOP_LIMIT):
             kwargs["timeInForce"] = request.time_in_force.value
         # Hedge mode: positionSide zorunlu (Binance -4061 önler). One-way mode'da None.

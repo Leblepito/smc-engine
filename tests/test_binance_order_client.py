@@ -584,6 +584,76 @@ def test_get_position_mode_returns_one_way_when_no_dual_side():
         patcher.stop()
 
 
+# =========================================================
+# X1.8 — Bug C (2026-05-18): place_order auto-quantize to tick_size (-1111)
+# =========================================================
+
+
+def test_place_order_quantizes_price_to_tick_size():
+    """LIMIT price float-noise (77217.01299999999) → tick=0.10 → 77217.0 gönderilir."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        mock.futures_create_order.return_value = {
+            "orderId": 1, "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+            "origQty": "0.002", "price": "77217.0", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="BTCUSDT", side=OrderSide.BUY, type=OrderType.LIMIT,
+            qty=0.002, price=77217.01299999999, time_in_force=TimeInForce.GTC,
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        assert kwargs["price"] == 77217.0, f"price not quantized: {kwargs['price']!r}"
+    finally:
+        patcher.stop()
+
+
+def test_place_order_quantizes_stop_price_to_tick_size():
+    """STOP_MARKET stop_price (77217.01299999999) → 77217.0 (incident gerçek değer)."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_exchange_info.return_value = _exchange_info_fixture()
+        mock.futures_create_order.return_value = {
+            "orderId": 99, "symbol": "BTCUSDT", "side": "SELL", "type": "STOP_MARKET",
+            "origQty": "0.002", "stopPrice": "77217.0", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="BTCUSDT", side=OrderSide.SELL, type=OrderType.STOP_MARKET,
+            qty=0.002, stop_price=77217.01299999999,
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        assert kwargs["stopPrice"] == 77217.0
+    finally:
+        patcher.stop()
+
+
+def test_place_order_quantize_no_op_when_exchange_info_unavailable():
+    """get_symbol_meta exception fırlatırsa → raw değerle gönderilir (best-effort)."""
+    c, mock, patcher = _make_client()
+    try:
+        # exchange_info bilinçli boş → DOGEUSDT cache miss → SymbolNotFound
+        mock.futures_exchange_info.return_value = {"symbols": []}
+        mock.futures_create_order.return_value = {
+            "orderId": 1, "symbol": "DOGEUSDT", "side": "BUY", "type": "LIMIT",
+            "origQty": "10", "price": "0.123456", "status": "NEW",
+            "executedQty": "0", "avgPrice": "0",
+        }
+        req = OrderRequest(
+            symbol="DOGEUSDT", side=OrderSide.BUY, type=OrderType.LIMIT,
+            qty=10.0, price=0.123456,
+        )
+        c.place_order(req)
+        kwargs = mock.futures_create_order.call_args.kwargs
+        # Cache miss durumda raw geçer
+        assert kwargs["price"] == 0.123456
+    finally:
+        patcher.stop()
+
+
 def _exchange_info_fixture():
     """Minimal futures_exchange_info payload, 2 sembol, MIN_NOTIONAL + LOT_SIZE."""
     return {
