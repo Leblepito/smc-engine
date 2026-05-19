@@ -34,6 +34,23 @@ execution:
   # Boot'ta gerçek hesap mode'u sorgulanır + mismatch warning loglanır.
   position_mode: "ONE_WAY"
 
+  # Bug E (2026-05-19): LIMIT entry'nin anlık fill durumu → SL stop_price
+  # market'in yanlış tarafına düşer → -2021 reject + atomic rollback (smoke
+  # fonksiyonel değil). İki katman defense-in-depth:
+  #
+  # pre_place_mark_guard (B, primary): process_setup öncesi mark_price çek;
+  #   LONG için mark < entry veya SHORT için mark > entry ise setup atlanır
+  #   (SETUP_SKIPPED_PRICE_PASSED audit, order place YOK). Fetch fail
+  #   fail-safe → order yine place edilir (downstream A yakalar).
+  pre_place_mark_guard: true
+  #
+  # post_only (A, secondary): LIMIT entry GTX (Good Till Crossing, Binance
+  # futures'ın LIMIT_MAKER muadili) TimeInForce ile gönderilir. Order mark
+  # price'ın yanlış tarafındaysa Binance place ETMEZ (taker fill engellenir).
+  # TP exit order'ları GTC kalır (TP fiyatına ulaşıldığında likidite yoksa
+  # reject olmasın). Klasik GTC davranışı için false yap.
+  post_only: true
+
   # Kill switch — $100 bütçe default'u (kullanıcı kararı 2026-05-17).
   # $25 bütçe için: daily_loss_dollar=5.0, equity_minimum=15.0
   kill_switch:

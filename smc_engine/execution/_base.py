@@ -46,6 +46,11 @@ class TimeInForce(Enum):
     GTC = "GTC"  # Good Till Cancel
     IOC = "IOC"  # Immediate Or Cancel
     FOK = "FOK"  # Fill Or Kill
+    # Bug E-A (2026-05-19): Good Till Crossing — Binance Futures post-only.
+    # Order mark price'ın "yanlış" tarafındaysa Binance place ETMEZ (taker
+    # olmasını engeller). Spot'taki LIMIT_MAKER muadili. Pre-place guard'ı
+    # geçen ama hala yanlış tarafta olan setup'lar için defense-in-depth.
+    GTX = "GTX"
 
 
 # ============================================================
@@ -121,3 +126,7 @@ class ExecutionAdapter(Protocol):
     def get_order(self, symbol: str, order_id: str) -> OrderResponse: ...
     def get_position(self, symbol: str) -> Position: ...
     def get_account(self) -> Account: ...
+    # Bug E-B (2026-05-19): pre-place mark price guard için. I-1 code review.
+    # Alt-adapter implementasyonları (paper/backtest) bu metodu uygulamalı;
+    # eksikse OrderManager runtime'da AttributeError fırlatır.
+    def get_mark_price(self, symbol: str) -> float: ...

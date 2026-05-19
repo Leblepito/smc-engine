@@ -302,6 +302,34 @@ class BinanceOrderClient:
         resp = self._call_with_retry(self._client.futures_get_position_mode)
         return "HEDGE" if resp.get("dualSidePosition") else "ONE_WAY"
 
+    def get_mark_price(self, symbol: str) -> float:
+        """Sembolün şu anki mark price'ı (Binance premium index endpoint).
+
+        Bug E-B (2026-05-19): Pre-place mark price guard için kullanılır.
+        LIMIT entry'den önce gerçek market mark price kontrol edilir; setup
+        entry seviyesini geçmişse process_setup SETUP_SKIPPED_PRICE_PASSED
+        ile atlanır — Binance -2021 reject + atomic rollback'ten daha
+        ekonomik (REST call + audit, vs. order place + rollback + emergency
+        close).
+
+        Eksik/null markPrice (M-3 code review 2026-05-19): silent 0.0
+        fallback yerine BinanceOrderError(retryable=True) — guard fail-safe
+        path'i çalışır (return False + audit MARK_PRICE_FETCH_FAILED), order
+        place edilir (defense-in-depth A yakalar). 0.0 fallback olsaydı
+        LONG için "mark < entry" hep True olur ve TÜM LONG setup'lar sessizce
+        atlanırdı (silent outage).
+        """
+        norm = normalize_symbol(symbol)
+        resp = self._call_with_retry(self._client.futures_mark_price, symbol=norm)
+        mark_str = resp.get("markPrice")
+        if mark_str is None or mark_str == "":
+            raise BinanceOrderError(
+                code=-1,
+                message=f"markPrice missing in futures_mark_price response for {norm}",
+                retryable=True,
+            )
+        return float(mark_str)
+
     def cancel_order(self, symbol: str, order_id: str) -> OrderResponse:
         resp = self._call_with_retry(
             self._client.futures_cancel_order, symbol=symbol, orderId=int(order_id),

@@ -188,6 +188,17 @@ class SMCConfig:
     # "ONE_WAY" (default): positionSide gönderilmez (Binance default BOTH).
     # "HEDGE": LONG/SHORT positionSide otomatik bağlanır.
     execution_position_mode: str = "ONE_WAY"
+    # Bug E (2026-05-19): LIMIT entry anlık fill → SL stop_price market'in
+    # yanlış tarafına düşer → -2021 reject + rollback (smoke 0 fill).
+    # Iki katman defense-in-depth:
+    #   B (primary): process_setup öncesi mark_price çekip setup entry'sini
+    #     "geçmiş" mi diye kontrol et; geçmişse SETUP_SKIPPED_PRICE_PASSED
+    #     audit + skip (REST + log, order place yok).
+    #   A (secondary): LIMIT entry order'ını post-only (futures GTX) ile
+    #     gönder — guard'ı geçen ama hala yanlış tarafta olan setup'lar
+    #     Binance tarafından place edilmeden reddedilir.
+    execution_pre_place_mark_guard: bool = True
+    execution_post_only: bool = True
     # Kill switch eşikleri — $100 budget (kullanıcı kararı 2026-05-17):
     # 5A bütçesi $25 → $100 yükseltildi; daily_loss + equity_minimum scale-up.
     execution_kill_switch_consecutive_losses: int = 3
@@ -237,6 +248,8 @@ _SUBMAP_FIELDS = (
     "execution_margin_mode",
     "execution_order_timeout_minutes",
     "execution_position_mode",
+    "execution_pre_place_mark_guard",
+    "execution_post_only",
     "execution_kill_switch_consecutive_losses",
     "execution_kill_switch_daily_loss_dollar",
     "execution_kill_switch_equity_minimum",
@@ -274,6 +287,8 @@ _EXECUTION_KEYS = {
     "margin_mode": "execution_margin_mode",
     "order_timeout_minutes": "execution_order_timeout_minutes",
     "position_mode": "execution_position_mode",
+    "pre_place_mark_guard": "execution_pre_place_mark_guard",
+    "post_only": "execution_post_only",
     "fill_polling_seconds": "execution_fill_polling_seconds",
     "reconcile_loop_seconds": "execution_reconcile_loop_seconds",
     "audit_log_dir": "execution_audit_log_dir",

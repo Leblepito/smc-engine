@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 class ProcessResult(Enum):
     PLACED = "PLACED"
     SKIPPED_KILL_SWITCH = "SKIPPED_KILL_SWITCH"
+    SKIPPED_PRICE_PASSED = "SKIPPED_PRICE_PASSED"  # Bug E-B
     SIZING_FAILED = "SIZING_FAILED"
     REJECTED = "REJECTED"
 
@@ -87,7 +88,19 @@ class OrderManager:
             )
             return ProcessResult.SKIPPED_KILL_SWITCH
 
-        # 2. Position sizing
+        # 2. Bug E-B: Pre-place mark price guard (primary defense).
+        # LIMIT entry seviyesi market fiyatın yanlış tarafına geçtiyse,
+        # LIMIT anında fill olur ve SL stop_price'ı zaten geçilmiş seviyeye
+        # düşer → Binance -2021 "Order would immediately trigger" reddi.
+        # Bunun yerine setup'ı yumuşakça atla; sinyal kayıpları audit'te
+        # SETUP_SKIPPED_PRICE_PASSED olarak görünür.
+        if self.config.execution_pre_place_mark_guard:
+            if self._mark_price_passed_entry(validated, symbol, at_bar):
+                return ProcessResult.SKIPPED_PRICE_PASSED
+
+        # 3. Position sizing
+        # (Önceki adım numarası 2'ydi; Bug E-B guard'ı 2. sıraya geldikten
+        # sonra numaralandırma kaydı — I-3 code review.)
         try:
             symbol_meta = self.order_client.get_symbol_meta(symbol)
             account = self.order_client.get_account()
@@ -110,15 +123,22 @@ class OrderManager:
             )
             return ProcessResult.SIZING_FAILED
 
-        # 3. Place LIMIT order
+        # 4. Place LIMIT order
         side = OrderSide.BUY if validated.setup.direction is Direction.LONG else OrderSide.SELL
         # Bug A: HEDGE mode → positionSide LONG/SHORT zorunlu (-4061 önler).
         # ONE_WAY → None (Binance default BOTH).
         position_side = self._resolve_position_side(validated.setup.direction)
+        # Bug E-A: post-only → GTX (futures'ın LIMIT_MAKER muadili). Pre-place
+        # guard'ı geçen ama hala yanlış tarafta olan setup'lar Binance
+        # tarafında place ETMEDEN reddedilir (taker fill engellenir).
+        entry_tif = (
+            TimeInForce.GTX if self.config.execution_post_only
+            else TimeInForce.GTC
+        )
         req = OrderRequest(
             symbol=symbol, side=side, type=OrderType.LIMIT,
             qty=size, price=validated.setup.entry,
-            time_in_force=TimeInForce.GTC,
+            time_in_force=entry_tif,
             position_side=position_side,
         )
         try:
@@ -135,7 +155,7 @@ class OrderManager:
                 )
             return ProcessResult.REJECTED
 
-        # 4. Track + audit
+        # 5. Track + audit
         timeout_at = at_bar + timedelta(minutes=self.config.execution_order_timeout_minutes)
         tracked = TrackedPosition(
             order_id=resp.order_id, symbol=symbol, side=side.value,
@@ -154,6 +174,9 @@ class OrderManager:
             sl=validated.setup.sl, tp=validated.setup.tp[0],
             at_bar=at_bar.isoformat(),
             confluence_score=validated.setup.confluence_score,
+            # M-6 code review: post-mortem'de -5022/-2021 reject pattern'i
+            # GTX'ten mi geliyor anlayabilmek için TIF'i de audit'le.
+            time_in_force=entry_tif.value,
         )
         return ProcessResult.PLACED
 
@@ -367,6 +390,60 @@ class OrderManager:
             self._notify_kill_switch(active.order_id, pnl)
         # else: position closed but neither TP nor SL filled → manual / drift
         # Reconcile loop will handle.
+
+    def _mark_price_passed_entry(
+        self,
+        validated: ValidatedSetup,
+        symbol: str,
+        at_bar: datetime,
+    ) -> bool:
+        """Bug E-B: Mark price entry seviyesini geçmiş mi?
+
+        LONG: mark < entry → "geçmiş" (LIMIT BUY anında dolar, SL passed).
+        SHORT: mark > entry → aynı.
+        mark == entry → just-touched edge; geçmemiş kabul (place et).
+        Fetch fail → fail-safe: False döner (order place edilir; downstream
+        defense-in-depth — post-only ya da atomic rollback yakalar).
+        """
+        try:
+            mark = self.order_client.get_mark_price(symbol)
+        except BinanceOrderError as exc:
+            # I-2 code review: kill_switch_signal'lı hatalar buradan da
+            # eskalasyon yapmalı — guard fail-safe geçse bile gerçek
+            # auth/permission/balance problemini bir sonraki place_order'a
+            # devretmek yerine erkenden yakala.
+            if exc.kill_switch_signal:
+                self.kill_switch.trigger_external(
+                    reason=f"BINANCE_ERROR_{exc.code}", details=[exc.message],
+                )
+            self.audit_log.emit(
+                "MARK_PRICE_FETCH_FAILED",
+                symbol=symbol, at_bar=at_bar.isoformat(),
+                error=type(exc).__name__, message=exc.message,
+                error_code=exc.code,
+            )
+            return False
+        except Exception as exc:  # network/parse — fail-safe
+            self.audit_log.emit(
+                "MARK_PRICE_FETCH_FAILED",
+                symbol=symbol, at_bar=at_bar.isoformat(),
+                error=type(exc).__name__, message=str(exc),
+            )
+            return False
+
+        entry = validated.setup.entry
+        direction = validated.setup.direction
+        passed = (
+            (direction is Direction.LONG and mark < entry)
+            or (direction is Direction.SHORT and mark > entry)
+        )
+        if passed:
+            self.audit_log.emit(
+                "SETUP_SKIPPED_PRICE_PASSED",
+                symbol=symbol, at_bar=at_bar.isoformat(),
+                direction=direction.value, entry=entry, mark_price=mark,
+            )
+        return passed
 
     def _resolve_position_side(self, direction: Direction) -> Optional[str]:
         """HEDGE mode → 'LONG'/'SHORT'; ONE_WAY → None.

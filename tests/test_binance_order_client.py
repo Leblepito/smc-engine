@@ -631,6 +631,67 @@ def test_place_order_quantizes_stop_price_to_tick_size():
         patcher.stop()
 
 
+# =========================================================
+# X1.9 — Bug E-B (2026-05-19): get_mark_price (-2021 önler)
+# =========================================================
+
+
+def test_get_mark_price_returns_float_from_premium_index():
+    """futures_mark_price → markPrice string parse → float."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_mark_price.return_value = {
+            "symbol": "BTCUSDT", "markPrice": "77123.45", "indexPrice": "77100.0",
+        }
+        mp = c.get_mark_price("BTCUSDT")
+        assert isinstance(mp, float)
+        assert mp == 77123.45
+        mock.futures_mark_price.assert_called_once_with(symbol="BTCUSDT")
+    finally:
+        patcher.stop()
+
+
+def test_get_mark_price_normalizes_symbol():
+    """Sembol normalize edilmeli (BTC-USDT → BTCUSDT)."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_mark_price.return_value = {"symbol": "BTCUSDT", "markPrice": "77123.45"}
+        c.get_mark_price("btc-usdt")
+        kwargs = mock.futures_mark_price.call_args.kwargs
+        assert kwargs["symbol"] == "BTCUSDT"
+    finally:
+        patcher.stop()
+
+
+def test_get_mark_price_missing_field_raises_not_silent_zero():
+    """M-3 review: markPrice eksikse 0.0 dönmemeli — silent outage önlenir.
+
+    0.0 dönseydi LONG için 'mark < entry' her zaman True → her LONG setup
+    sessizce SETUP_SKIPPED_PRICE_PASSED olurdu, audit'te neden görünmezdi.
+    """
+    c, mock, patcher = _make_client()
+    try:
+        # markPrice field yok
+        mock.futures_mark_price.return_value = {"symbol": "BTCUSDT"}
+        with pytest.raises(BinanceOrderError) as exc_info:
+            c.get_mark_price("BTCUSDT")
+        assert "markPrice missing" in exc_info.value.message
+        assert exc_info.value.retryable is True
+    finally:
+        patcher.stop()
+
+
+def test_get_mark_price_empty_string_raises():
+    """markPrice='' (boş string) de None ile aynı muamele görür."""
+    c, mock, patcher = _make_client()
+    try:
+        mock.futures_mark_price.return_value = {"symbol": "BTCUSDT", "markPrice": ""}
+        with pytest.raises(BinanceOrderError):
+            c.get_mark_price("BTCUSDT")
+    finally:
+        patcher.stop()
+
+
 def test_place_order_quantize_no_op_when_exchange_info_unavailable():
     """get_symbol_meta exception fırlatırsa → raw değerle gönderilir (best-effort)."""
     c, mock, patcher = _make_client()
