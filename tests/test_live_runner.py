@@ -237,6 +237,141 @@ def test_runner_execution_hook_skipped_for_rejection(monkeypatch):
     om.process_setup.assert_not_called()  # rejection → execution skipped
 
 
+# ============================================================
+# İş 2 (2026-05-19): NO_SETUP tanı log + per-symbol tick summary
+# Sessiz signal kıtlığını görünür hale getirir — orchestrator'un neden
+# üretmediği audit'lenir (bias_neutral / no_active_pois / low_conf).
+# ============================================================
+
+
+def test_diagnose_no_setup_bias_neutral():
+    """HTF bias NEUTRAL → 'bias_neutral' reason."""
+    from smc_engine.live.runner import _diagnose_no_setup
+    from smc_engine.types import Bias
+    picture = MagicMock()
+    picture.htf_bias = Bias.NEUTRAL
+    picture.active_pois = []
+    assert _diagnose_no_setup(picture) == "bias_neutral"
+
+
+def test_diagnose_no_setup_no_active_pois():
+    """Bias directional ama active_pois boş → 'no_active_pois'."""
+    from smc_engine.live.runner import _diagnose_no_setup
+    from smc_engine.types import Bias
+    picture = MagicMock()
+    picture.htf_bias = Bias.BULLISH
+    picture.active_pois = []
+    assert _diagnose_no_setup(picture) == "no_active_pois"
+
+
+def test_diagnose_no_setup_low_confluence_or_sl_geometry():
+    """Bias directional + POI var ama setup yok → fallback etiketi.
+
+    "invalid_sl" wording bug imajı verirdi; sl_min_atr_multiple aslında
+    configured behavior — "sl_geometry" daha doğru (M2 code review).
+    """
+    from smc_engine.live.runner import _diagnose_no_setup
+    from smc_engine.types import Bias
+    picture = MagicMock()
+    picture.htf_bias = Bias.BEARISH
+    picture.active_pois = [MagicMock(), MagicMock()]  # 2 POI
+    assert _diagnose_no_setup(picture) == "low_confluence_or_sl_geometry"
+
+
+def test_diagnose_no_setup_picture_none_returns_unknown():
+    """Picture None ise hasattr() False → 'unknown' (M1 code review defansive contract)."""
+    from smc_engine.live.runner import _diagnose_no_setup
+    assert _diagnose_no_setup(None) == "unknown"
+
+
+def test_runner_logs_tick_no_setup_with_reason_when_build_returns_none(monkeypatch, caplog):
+    """build()=None → INFO log 'tick ... kind=no_setup reason=...' tick'te bir kez.
+
+    I2 code review: tek-şema tick log; analyze_signals.py tek regex ile
+    validated_setup/rejection/no_setup üçünü de yakalar.
+    """
+    import logging
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    picture = MagicMock()
+    from smc_engine.types import Bias
+    picture.htf_bias = Bias.BULLISH
+    picture.active_pois = []
+    picture.current_price = 77500.0
+
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=picture))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
+        runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    tick_records = [
+        r for r in caplog.records
+        if "tick" in r.getMessage() and "kind=no_setup" in r.getMessage()
+    ]
+    assert len(tick_records) == 1, (
+        f"tick no_setup log eksik, got: {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = tick_records[0].getMessage()
+    assert "symbol=BTCUSDT" in msg
+    assert "reason=no_active_pois" in msg
+    assert "bias=BULLISH" in msg
+    assert "gate=none" in msg  # I1 sentinel
+
+
+def test_runner_logs_tick_summary_when_validated_setup(monkeypatch, caplog):
+    """validated_setup üretildiğinde 'tick' summary log INFO seviyesinde."""
+    import logging
+    from smc_engine.types import ValidatedSetup as VS
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    fake_setup = MagicMock(name="setup")
+    fake_validated = MagicMock(spec=VS, name="validated")
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
+        runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    tick_records = [r for r in caplog.records if "tick" in r.getMessage() and "symbol=BTCUSDT" in r.getMessage()]
+    assert len(tick_records) >= 1
+    assert any("kind=validated_setup" in r.getMessage() for r in tick_records)
+    # I1: validated path'inde gate=none sentinel (boş value değil)
+    assert any("gate=none" in r.getMessage() for r in tick_records
+               if "kind=validated_setup" in r.getMessage())
+
+
+def test_runner_logs_tick_summary_when_rejection(monkeypatch, caplog):
+    """rejection üretildiğinde gate'i tick summary'de gör."""
+    import logging
+    from smc_engine.types import Rejection
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    fake_setup = MagicMock(name="setup")
+    fake_rejection = MagicMock(spec=Rejection, name="rejection")
+    fake_rejection.gate = "funding"
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_rejection))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
+        runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    tick_records = [r for r in caplog.records if "tick" in r.getMessage()]
+    assert any("kind=rejection" in r.getMessage() and "gate=funding" in r.getMessage()
+               for r in tick_records)
+
+
 def test_runner_last_closed_m15_truncates_to_quarter_hour():
     """Spec §3 look-ahead: at_bar = en son kapanmış M15 bar'ın open_time'ı.
 
