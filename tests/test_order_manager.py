@@ -564,6 +564,75 @@ def test_on_fill_tp_order_uses_gtc_not_gtx(tmp_path):
     assert tp_orders[0].time_in_force is TimeInForce.GTC
 
 
+# ============================================================
+# İş 1 (2026-05-19): max_concurrent_positions guard
+# Multi-symbol smoke için pratik fren — PENDING+ACTIVE toplamı sınırı.
+# 5A tek-pozisyon ruhu (averaging gate) ile uyumlu.
+# ============================================================
+
+
+def test_max_concurrent_disabled_when_zero(tmp_path):
+    """cap=0 → guard kapalı; arka arkaya çok setup yine de geçer."""
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    om.config.execution_max_concurrent_positions = 0
+    om.config.execution_pre_place_mark_guard = False  # E-B izole
+    vs = _make_validated()
+    # 5 ardışık setup (her biri PENDING'e gider, üst sınır yok)
+    for i in range(5):
+        om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, i))
+    # 5 LIMIT entry placed olmuş olmalı (cap kapalı, hiç skip yok)
+    assert len(foc.placed) == 5
+
+
+def test_max_concurrent_blocks_when_cap_reached(tmp_path):
+    """cap=2: ilk 2 PLACED, 3. SKIPPED_MAX_CONCURRENT + audit."""
+    om, foc, tracker, audit, _ = _build_manager(tmp_path)
+    om.config.execution_max_concurrent_positions = 2
+    om.config.execution_pre_place_mark_guard = False
+    vs = _make_validated()
+
+    r1 = om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 0))
+    r2 = om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 15))
+    r3 = om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 30))
+
+    assert r1 is ProcessResult.PLACED
+    assert r2 is ProcessResult.PLACED
+    assert r3 is ProcessResult.SKIPPED_MAX_CONCURRENT
+    # 3. setup için yeni order YOK
+    assert len(foc.placed) == 2
+    # Audit'te SETUP_SKIPPED_MAX_CONCURRENT
+    log_files = list((tmp_path / "audit").glob("trades-*.jsonl"))
+    content = log_files[0].read_text()
+    assert "SETUP_SKIPPED_MAX_CONCURRENT" in content
+
+
+def test_max_concurrent_counts_pending_and_active(tmp_path):
+    """Guard PENDING+ACTIVE toplamına bakar — ACTIVE da sayılır.
+
+    Setup 1 fill ettirilir (PENDING→ACTIVE), Setup 2 PENDING. cap=2 → 3.
+    setup hala SKIPPED (1 ACTIVE + 1 PENDING = 2).
+    """
+    om, foc, tracker, _, _ = _build_manager(tmp_path)
+    om.config.execution_max_concurrent_positions = 2
+    om.config.execution_pre_place_mark_guard = False
+    vs = _make_validated()
+
+    # Setup 1: place + fill (ACTIVE)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 0))
+    p1 = tracker.pending()[0]
+    foc.simulate_fill(p1.order_id, fill_price=78327.5, fill_qty=p1.qty)
+    om.tick_fill_polling()
+    assert len(tracker.active()) == 1
+
+    # Setup 2: place (PENDING)
+    om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 15))
+    assert len(tracker.pending()) == 1
+
+    # Setup 3: cap'e dayalı SKIPPED (1 ACTIVE + 1 PENDING = 2 = cap)
+    r3 = om.process_setup(vs, symbol="BTCUSDT", at_bar=datetime(2026, 5, 19, 3, 30))
+    assert r3 is ProcessResult.SKIPPED_MAX_CONCURRENT
+
+
 def test_process_setup_mark_price_fetch_failure_proceeds_safely(tmp_path):
     """get_mark_price exception → guard fail-safe: order yine place edilir.
 

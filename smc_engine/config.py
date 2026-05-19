@@ -199,6 +199,17 @@ class SMCConfig:
     #     Binance tarafından place edilmeden reddedilir.
     execution_pre_place_mark_guard: bool = True
     execution_post_only: bool = True
+    # İş 1 (2026-05-19): aynı anda açık+pending pozisyon üst sınırı —
+    # PER-SYMBOL (per-tracker). examples/run_live.py her sembol için ayrı
+    # OrderManager + PositionTracker init eder; bu guard tek bir tracker
+    # üstündeki PENDING+ACTIVE toplamını sınırlar. Cross-tracker global cap
+    # 5B scope'unda (lock + shared ConcurrencyLimiter gerekir).
+    # 5A walking skeleton tek-pozisyon ruhuyla uyumlu (averaging gate'in
+    # PENDING-inclusive uzantısı). Tetiklenirse SETUP_SKIPPED_MAX_CONCURRENT
+    # audit + ProcessResult.SKIPPED_MAX_CONCURRENT.
+    # 0 veya negatif → guard kapalı (backward-compat escape hatch).
+    # Multi-symbol risk uyarısı: cap=N + S sembol → toplam max N×S pozisyon.
+    execution_max_concurrent_positions: int = 1
     # Kill switch eşikleri — $100 budget (kullanıcı kararı 2026-05-17):
     # 5A bütçesi $25 → $100 yükseltildi; daily_loss + equity_minimum scale-up.
     execution_kill_switch_consecutive_losses: int = 3
@@ -250,6 +261,7 @@ _SUBMAP_FIELDS = (
     "execution_position_mode",
     "execution_pre_place_mark_guard",
     "execution_post_only",
+    "execution_max_concurrent_positions",
     "execution_kill_switch_consecutive_losses",
     "execution_kill_switch_daily_loss_dollar",
     "execution_kill_switch_equity_minimum",
@@ -289,6 +301,7 @@ _EXECUTION_KEYS = {
     "position_mode": "execution_position_mode",
     "pre_place_mark_guard": "execution_pre_place_mark_guard",
     "post_only": "execution_post_only",
+    "max_concurrent_positions": "execution_max_concurrent_positions",
     "fill_polling_seconds": "execution_fill_polling_seconds",
     "reconcile_loop_seconds": "execution_reconcile_loop_seconds",
     "audit_log_dir": "execution_audit_log_dir",

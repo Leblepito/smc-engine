@@ -312,7 +312,12 @@ def test_kill_switch_triggered_skips_subsequent_setups(tmp_path):
 
 
 def test_multiple_setups_processed_sequentially(tmp_path):
+    """3 ardışık setup → 3 PENDING. max_concurrent guard (İş 1 2026-05-19)
+    default 1 olduğu için bu test no-cap mode'u zorlar; niyeti
+    `process_setup` çağrı sırasının doğru çalışmasını doğrulamak,
+    cap davranışını değil."""
     cfg, foc, om, tracker, audit, ks = _build_stack(tmp_path)
+    cfg.execution_max_concurrent_positions = 0  # cap disabled
     for i in range(3):
         vs = _make_validated()
         om.process_setup(

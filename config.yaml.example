@@ -51,6 +51,31 @@ execution:
   # reject olmasın). Klasik GTC davranışı için false yap.
   post_only: true
 
+  # İş 1 (2026-05-19): aynı anda açık+pending pozisyon üst sınırı —
+  # PER-SYMBOL (per-tracker). run_live.py her sembol için ayrı OrderManager+
+  # PositionTracker init eder, bu yüzden cap her sembol bağımsız uygulanır.
+  # Cross-symbol global cap 5B scope'unda.
+  # Cap'e ulaşılırsa SETUP_SKIPPED_MAX_CONCURRENT audit + skip.
+  # <=0 → guard kapalı (sınırsız). 5A: tek-pozisyon ruhu (averaging gate
+  # PENDING-inclusive extension).
+  max_concurrent_positions: 1
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 5A genişletme override (kullanıcı kararı — opsiyonel, smoke veri toplama):
+  # Sub-proje #2 sinyal pipeline'ı BTCUSDT için sessiz 6+ saat olduğunda
+  # multi-symbol smoke veri akışını hızlandırır. Spec §16.2 acceptance
+  # kriterleri (10-12 trade) tek sembolde uzun sürebilir.
+  #
+  #   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+  #   max_concurrent_positions: 1   # PER SYMBOL — 3 sembol × 1 = en fazla 3 toplam
+  #
+  # !!! ÖNEMLİ — RİSK BÜTÇE UYARISI !!!
+  # Cap PER-SYMBOL'dür: cap=N + S sembol → toplam max N×S pozisyon.
+  # risk_per_trade_dollar=$2, cap=1, 3 sembol → max toplam risk = $6 = %6.
+  # Eğer cap=3 koyarsan: 3×3 = 9 pozisyon = $18 = %18 ($100 bütçenin %18'i).
+  # 5A acceptance için cap=1 + N sembol önerilir (her sembol için 1 pozisyon).
+  # ──────────────────────────────────────────────────────────────────────
+
   # Kill switch — $100 bütçe default'u (kullanıcı kararı 2026-05-17).
   # $25 bütçe için: daily_loss_dollar=5.0, equity_minimum=15.0
   kill_switch:

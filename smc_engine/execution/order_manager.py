@@ -49,6 +49,7 @@ class ProcessResult(Enum):
     PLACED = "PLACED"
     SKIPPED_KILL_SWITCH = "SKIPPED_KILL_SWITCH"
     SKIPPED_PRICE_PASSED = "SKIPPED_PRICE_PASSED"  # Bug E-B
+    SKIPPED_MAX_CONCURRENT = "SKIPPED_MAX_CONCURRENT"  # İş 1
     SIZING_FAILED = "SIZING_FAILED"
     REJECTED = "REJECTED"
 
@@ -79,7 +80,7 @@ class OrderManager:
         symbol: str,
         at_bar: datetime,
     ) -> ProcessResult:
-        # 1. Kill switch check
+        # Kill switch check
         if self.kill_switch.is_triggered():
             self.audit_log.emit(
                 "SETUP_SKIPPED_KILL_SWITCH",
@@ -88,7 +89,30 @@ class OrderManager:
             )
             return ProcessResult.SKIPPED_KILL_SWITCH
 
-        # 2. Bug E-B: Pre-place mark price guard (primary defense).
+        # Concurrent-position guard (max_concurrent_positions; per-tracker).
+        # İş 1 (2026-05-19): OrderManager tek tracker'a sahip — multi-symbol
+        # kullanımında her sembolün manager'ı kendi tracker'ına sahip
+        # (per-symbol init, bkz. examples/run_live.py). Cap PENDING+ACTIVE
+        # toplamını sınırlar. <=0 → kapalı.
+        cap = self.config.execution_max_concurrent_positions
+        if cap > 0:
+            pending_ids = [p.order_id for p in self.position_tracker.pending()]
+            active_ids = [p.order_id for p in self.position_tracker.active()]
+            current = len(pending_ids) + len(active_ids)
+            if current >= cap:
+                # M-1 code review: blocking order_id'leri forensics için audit'le.
+                # Skipped setup → blocking order_id zinciri (ORDER_PLACED →
+                # ORDER_FILLED → POSITION_CLOSED) tek satırda izlenebilir.
+                self.audit_log.emit(
+                    "SETUP_SKIPPED_MAX_CONCURRENT",
+                    symbol=symbol, at_bar=at_bar.isoformat(),
+                    current_positions=current, max_concurrent=cap,
+                    blocking_pending_ids=pending_ids,
+                    blocking_active_ids=active_ids,
+                )
+                return ProcessResult.SKIPPED_MAX_CONCURRENT
+
+        # Pre-place mark price guard (Bug E-B, primary defense).
         # LIMIT entry seviyesi market fiyatın yanlış tarafına geçtiyse,
         # LIMIT anında fill olur ve SL stop_price'ı zaten geçilmiş seviyeye
         # düşer → Binance -2021 "Order would immediately trigger" reddi.
@@ -98,9 +122,7 @@ class OrderManager:
             if self._mark_price_passed_entry(validated, symbol, at_bar):
                 return ProcessResult.SKIPPED_PRICE_PASSED
 
-        # 3. Position sizing
-        # (Önceki adım numarası 2'ydi; Bug E-B guard'ı 2. sıraya geldikten
-        # sonra numaralandırma kaydı — I-3 code review.)
+        # Position sizing
         try:
             symbol_meta = self.order_client.get_symbol_meta(symbol)
             account = self.order_client.get_account()
@@ -123,7 +145,7 @@ class OrderManager:
             )
             return ProcessResult.SIZING_FAILED
 
-        # 4. Place LIMIT order
+        # Place LIMIT entry
         side = OrderSide.BUY if validated.setup.direction is Direction.LONG else OrderSide.SELL
         # Bug A: HEDGE mode → positionSide LONG/SHORT zorunlu (-4061 önler).
         # ONE_WAY → None (Binance default BOTH).
@@ -155,7 +177,7 @@ class OrderManager:
                 )
             return ProcessResult.REJECTED
 
-        # 5. Track + audit
+        # Track + audit
         timeout_at = at_bar + timedelta(minutes=self.config.execution_order_timeout_minutes)
         tracked = TrackedPosition(
             order_id=resp.order_id, symbol=symbol, side=side.value,
