@@ -476,3 +476,60 @@ def test_cli_normal_sweep_returns_exit_0(monkeypatch, tmp_path):
     ])
     assert rc == 0
     assert out.exists()
+
+
+# ============================================================
+# _slice_m15 — M15 pencere dilimleme (250-bar tuzağı düzeltmesi)
+# ============================================================
+
+
+def _fake_m15_df():
+    """100 satırlık deterministik M15 DataFrame (dilimleme testleri için)."""
+    import pandas as pd
+
+    return pd.DataFrame({"close": list(range(100))})
+
+
+def test_m15_window_none_uses_full_dataset():
+    """m15_window None → tüm parquet kullanılır (slice yapılmaz)."""
+    mod = _load_sweep_module()
+    df = _fake_m15_df()
+    result = mod._slice_m15(df, m15_offset=0, m15_window=None)
+    assert len(result) == len(df) == 100
+    assert list(result["close"]) == list(range(100))
+
+
+def test_m15_window_explicit_slices_correctly():
+    """m15_window verilince offset:offset+window dilimi alınır."""
+    mod = _load_sweep_module()
+    df = _fake_m15_df()
+    result = mod._slice_m15(df, m15_offset=10, m15_window=20)
+    assert len(result) == 20
+    assert list(result["close"]) == list(range(10, 30))
+
+
+def test_m15_offset_zero_default():
+    """offset=0 + window None → baştan tüm dataset (yeni default davranışı)."""
+    mod = _load_sweep_module()
+    df = _fake_m15_df()
+    result = mod._slice_m15(df, m15_offset=0, m15_window=None)
+    assert result.iloc[0]["close"] == 0
+    assert len(result) == 100
+
+
+def test_m15_window_none_with_offset_slices_tail():
+    """m15_window None ama offset>0 → offset'ten sona kadar."""
+    mod = _load_sweep_module()
+    df = _fake_m15_df()
+    result = mod._slice_m15(df, m15_offset=40, m15_window=None)
+    assert len(result) == 60
+    assert list(result["close"]) == list(range(40, 100))
+
+
+def test_m15_window_argparse_default_is_none():
+    """--m15-window flag verilmezse args.m15_window None (tuzak kapandı)."""
+    mod = _load_sweep_module()
+    p = mod._build_arg_parser()
+    args = p.parse_args([])
+    assert args.m15_window is None
+    assert args.m15_offset == 0

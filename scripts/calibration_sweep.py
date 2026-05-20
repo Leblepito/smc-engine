@@ -211,13 +211,24 @@ def _parse_float_list(s: str) -> list[float]:
     return [float(x.strip()) for x in s.split(",") if x.strip()]
 
 
+def _slice_m15(m15_full, m15_offset: int, m15_window: Optional[int]):
+    """M15 DataFrame'i offset/window'a gore dilimle.
+
+    m15_window None ise offset'ten sona kadar tum veri kullanilir (varsayilan).
+    Aksi halde [offset:offset+window] dilimi alinir.
+    """
+    if m15_window is None:
+        return m15_full.iloc[m15_offset:]
+    return m15_full.iloc[m15_offset:m15_offset + m15_window]
+
+
 def _make_real_backtest_fn(
-    m15_window: int, m15_offset: int, m15_lookback: int,
+    m15_window: Optional[int], m15_offset: int, m15_lookback: int,
 ):
     """data/btc parquet'ten OHLCV yükleyip harness.run çağıran fonksiyon üret.
 
-    test_backtest_e2e.py'deki _load_dataset desenini izler (sınırlı M15
-    penceresi + tam HTF bağlamı — harness O(n^2) perf sınırı).
+    test_backtest_e2e.py'deki _load_dataset desenini izler. m15_window None
+    ise tum M15 parquet kullanilir; verilirse sinirli pencere (perf icin).
     """
     import os
     from smc_engine.config import SMCConfig
@@ -238,7 +249,7 @@ def _make_real_backtest_fn(
     h1 = load_parquet(str(btc_dir / "BTCUSDT_H1.parquet"))
     h8 = resample_ohlcv(h1, "H8")
     m15_full = load_parquet(str(btc_dir / "BTCUSDT_M15.parquet"))
-    m15_slice = m15_full.iloc[m15_offset:m15_offset + m15_window]
+    m15_slice = _slice_m15(m15_full, m15_offset, m15_window)
 
     def run_backtest(params: dict) -> dict:
         cfg = SMCConfig()
@@ -257,7 +268,7 @@ def _make_real_backtest_fn(
 
 
 def _make_real_walk_forward_fn(
-    m15_window: int, m15_offset: int, m15_lookback: int,
+    m15_window: Optional[int], m15_offset: int, m15_lookback: int,
     train_bars: int, test_bars: int, step_bars: int,
 ):
     """data/btc parquet'ten OHLCV yükleyip walk_forward çağıran fonksiyon üret.
@@ -277,7 +288,7 @@ def _make_real_walk_forward_fn(
     h1 = load_parquet(str(btc_dir / "BTCUSDT_H1.parquet"))
     h8 = resample_ohlcv(h1, "H8")
     m15_full = load_parquet(str(btc_dir / "BTCUSDT_M15.parquet"))
-    m15_slice = m15_full.iloc[m15_offset:m15_offset + m15_window]
+    m15_slice = _slice_m15(m15_full, m15_offset, m15_window)
 
     def run_wf(params: dict) -> list[dict]:
         cfg = SMCConfig()
@@ -296,7 +307,7 @@ def _make_real_walk_forward_fn(
     return run_wf
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="SL geometry parametre sweep - backtest grid."
     )
@@ -304,10 +315,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                    help="sl_min_atr_multiple values (comma-separated).")
     p.add_argument("--sl-band-buffer", default="0.25,0.375,0.50",
                    help="sl_band_buffer_mult values (comma-separated).")
-    p.add_argument("--m15-window", type=int, default=250,
-                   help="M15 replay window size (harness perf limit).")
-    p.add_argument("--m15-offset", type=int, default=6000,
-                   help="M15 window start offset.")
+    p.add_argument("--m15-window", type=int, default=None,
+                   help="M15 replay window size. Omitted (default) = full "
+                        "parquet from offset to end. Set only to cap runtime.")
+    p.add_argument("--m15-offset", type=int, default=0,
+                   help="M15 window start offset (default 0 = dataset start).")
     p.add_argument("--m15-lookback", type=int, default=140,
                    help="harness.run per-call M15 slice limit.")
     p.add_argument("--out", default=None,
@@ -333,6 +345,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                    help="Ratchet baseline max_drawdown_pct.")
     p.add_argument("--baseline-trade-count", type=int, default=None,
                    help="Ratchet baseline trade_count.")
+    return p
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    p = _build_arg_parser()
     args = p.parse_args(argv)
 
     grid = build_param_grid(
