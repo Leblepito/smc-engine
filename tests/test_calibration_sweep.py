@@ -358,6 +358,86 @@ def test_run_walk_forward_validation_no_overfit_when_oos_holds():
     assert results[0]["overfit"] is False
 
 
+def test_run_walk_forward_validation_computes_oos_profit_factor():
+    """OOS test dilimlerinin profit_factor ortalaması raporlanmalı.
+
+    expectancy outlier'a esir (Soru 4) — OOS pf bağımsız teyit metriği.
+    """
+    mod = _load_sweep_module()
+    candidates = [
+        {"sl_min_atr_multiple": 0.35, "sl_band_buffer_mult": 0.375,
+         "expectancy": 1.10, "profit_factor": 1.44, "trade_count": 20},
+    ]
+
+    def fake_wf(params):
+        return [
+            {"test_metrics": {"expectancy": 0.30, "profit_factor": 1.6,
+                              "trade_count": 8, "win_rate": 0.5}},
+            {"test_metrics": {"expectancy": 0.20, "profit_factor": 1.2,
+                              "trade_count": 6, "win_rate": 0.48}},
+        ]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    assert "oos_profit_factor_mean" in results[0]
+    # OOS pf ort = (1.6 + 1.2) / 2 = 1.4
+    assert abs(results[0]["oos_profit_factor_mean"] - 1.4) < 1e-9
+
+
+def test_run_walk_forward_validation_oos_pf_missing_metric_defaults_zero():
+    """test_metrics'te profit_factor yoksa 0.0 sayılır (crash etmez)."""
+    mod = _load_sweep_module()
+    candidates = [
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.30, "trade_count": 10},
+    ]
+
+    def fake_wf(params):
+        # profit_factor anahtarı YOK
+        return [{"test_metrics": {"expectancy": 0.28, "trade_count": 5}}]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    assert results[0]["oos_profit_factor_mean"] == 0.0
+
+
+def test_run_walk_forward_validation_preserves_existing_fields():
+    """OOS pf eklenince mevcut alanlar (exp, overfit) bozulmamalı."""
+    mod = _load_sweep_module()
+    candidates = [
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.25,
+         "expectancy": 0.40, "profit_factor": 1.7, "trade_count": 20},
+    ]
+
+    def fake_wf(params):
+        return [
+            {"test_metrics": {"expectancy": 0.38, "profit_factor": 1.65,
+                              "trade_count": 7, "win_rate": 0.5}},
+        ]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    r = results[0]
+    assert r["in_sample_expectancy"] == 0.40
+    assert abs(r["oos_expectancy_mean"] - 0.38) < 1e-9
+    assert r["oos_window_count"] == 1
+    assert r["overfit"] is False
+
+
+def test_walk_forward_oos_pf_appears_in_csv(tmp_path):
+    """oos_profit_factor_mean walk-forward CSV çıktısında görünmeli."""
+    mod = _load_sweep_module()
+    wf_rows = [
+        {"sl_min_atr_multiple": 0.35, "sl_band_buffer_mult": 0.375,
+         "expectancy": 1.10, "in_sample_expectancy": 1.10,
+         "oos_expectancy_mean": 0.25, "oos_profit_factor_mean": 1.42,
+         "oos_window_count": 3, "overfit": False},
+    ]
+    out = tmp_path / "wf.csv"
+    mod.sweep_rows_to_csv(wf_rows, out)
+    with out.open(newline="", encoding="utf-8") as fh:
+        reader = list(csv.DictReader(fh))
+    assert "oos_profit_factor_mean" in reader[0]
+    assert reader[0]["oos_profit_factor_mean"] == "1.42"
+
+
 # ============================================================
 # sweep_rows_to_csv — walk-forward (farklı şema) union-of-keys (M-7)
 # ============================================================

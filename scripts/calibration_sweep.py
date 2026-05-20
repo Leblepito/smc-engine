@@ -165,8 +165,14 @@ def run_walk_forward_validation(
     ``overfit_ratio`` katından düşükse → ``overfit=True``. (In-sample'da
     parlak görünüp test'te çöken kombinasyonu işaretler.)
 
+    OOS profit_factor (``oos_profit_factor_mean``): expectancy birkaç
+    dar-SL outlier'ına esir olabilir (P2 teşhisi 2026-05-20) — OOS
+    profit_factor bağımsız teyit metriğidir; overfit bayrağının
+    expectancy-tabanlı zayıflığını telafi eder. Bayrak hesabına GİRMEZ,
+    yalnızca raporlanır (aday seçim kararı OOS pf'i ayrıca değerlendirir).
+
     Returns: her aday için in_sample_expectancy + oos_expectancy_mean +
-    oos_window_count + overfit bayrağı.
+    oos_profit_factor_mean + oos_window_count + overfit bayrağı.
     """
     results: list[dict] = []
     for cand in candidates:
@@ -179,17 +185,17 @@ def run_walk_forward_validation(
                 "error": f"{type(exc).__name__}: {exc}",
             })
             continue
-        oos_exps = [
-            w["test_metrics"].get("expectancy", 0.0)
-            for w in windows
-            if "test_metrics" in w
-        ]
+        test_metrics = [w["test_metrics"] for w in windows if "test_metrics" in w]
+        oos_exps = [tm.get("expectancy", 0.0) for tm in test_metrics]
+        oos_pfs = [tm.get("profit_factor", 0.0) for tm in test_metrics]
         oos_mean = sum(oos_exps) / len(oos_exps) if oos_exps else 0.0
+        oos_pf_mean = sum(oos_pfs) / len(oos_pfs) if oos_pfs else 0.0
         overfit = oos_mean < in_sample_exp * overfit_ratio
         results.append({
             **cand,
             "in_sample_expectancy": in_sample_exp,
             "oos_expectancy_mean": oos_mean,
+            "oos_profit_factor_mean": oos_pf_mean,
             "oos_window_count": len(oos_exps),
             "overfit": overfit,
         })
