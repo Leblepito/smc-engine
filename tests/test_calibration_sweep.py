@@ -1,0 +1,478 @@
+"""scripts/calibration_sweep.py testleri (SL geometry kalibrasyon harness).
+
+run_backtest_fn injection ile — gerçek backtest çağrılmaz, deterministik
+mock kullanılır. CLI parquet-yükleme tarafı ayrı (smoke, bash gibi).
+"""
+
+from __future__ import annotations
+
+import csv
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+
+def _load_sweep_module():
+    """scripts/calibration_sweep.py'yi modül olarak yükle."""
+    repo_root = Path(__file__).resolve().parent.parent
+    spec_path = repo_root / "scripts" / "calibration_sweep.py"
+    spec = importlib.util.spec_from_file_location("calibration_sweep", spec_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ============================================================
+# build_param_grid
+# ============================================================
+
+
+def test_build_param_grid_cartesian_product():
+    """2 sl_min_atr × 3 sl_band_buffer → 6 kombinasyon."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid(
+        sl_min_atr_multiple=[0.25, 0.5],
+        sl_band_buffer_mult=[0.25, 0.375, 0.5],
+    )
+    assert len(grid) == 6
+    # Her eleman iki anahtarı da içermeli
+    for combo in grid:
+        assert "sl_min_atr_multiple" in combo
+        assert "sl_band_buffer_mult" in combo
+    # Belirli bir kombinasyon var mı
+    assert {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5} in grid
+
+
+def test_build_param_grid_single_values():
+    """Tek değerli listeler → 1 kombinasyon."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid(
+        sl_min_atr_multiple=[0.5], sl_band_buffer_mult=[0.25],
+    )
+    assert grid == [{"sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25}]
+
+
+# ============================================================
+# run_sweep — run_backtest_fn injection
+# ============================================================
+
+
+def test_run_sweep_calls_backtest_per_combo_and_collects_metrics():
+    """Her grid kombinasyonu için run_backtest_fn çağrılır; metrikler toplanır."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid(
+        sl_min_atr_multiple=[0.25, 0.5], sl_band_buffer_mult=[0.25],
+    )
+    calls = []
+
+    def fake_backtest(params):
+        calls.append(params)
+        # Deterministik sahte metrikler — sl_min_atr küçükse daha çok trade
+        return {
+            "trade_count": 20 if params["sl_min_atr_multiple"] == 0.25 else 5,
+            "win_rate": 0.50,
+            "expectancy": 0.30,
+            "profit_factor": 1.5,
+            "max_drawdown_pct": 0.10,
+            "sharpe": 1.2,
+        }
+
+    rows = mod.run_sweep(grid, fake_backtest)
+    assert len(rows) == 2
+    assert len(calls) == 2
+    # Her satır params + metrikleri birlikte taşımalı
+    for row in rows:
+        assert "sl_min_atr_multiple" in row
+        assert "sl_band_buffer_mult" in row
+        assert "trade_count" in row
+        assert "win_rate" in row
+        assert "expectancy" in row
+
+
+def test_run_sweep_backtest_failure_recorded_not_crash():
+    """run_backtest_fn bir kombinasyonda exception fırlatırsa sweep çökmemeli;
+    o satır error işaretli kaydedilir, diğerleri devam eder."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid(
+        sl_min_atr_multiple=[0.25, 0.5], sl_band_buffer_mult=[0.25],
+    )
+
+    def flaky_backtest(params):
+        if params["sl_min_atr_multiple"] == 0.25:
+            raise RuntimeError("simulated backtest failure")
+        return {
+            "trade_count": 5, "win_rate": 0.5, "expectancy": 0.3,
+            "profit_factor": 1.5, "max_drawdown_pct": 0.1, "sharpe": 1.0,
+        }
+
+    rows = mod.run_sweep(grid, flaky_backtest)
+    assert len(rows) == 2  # ikisi de kaydedildi
+    errored = [r for r in rows if r.get("error")]
+    ok = [r for r in rows if not r.get("error")]
+    assert len(errored) == 1
+    assert len(ok) == 1
+    assert "simulated backtest failure" in errored[0]["error"]
+
+
+# ============================================================
+# sweep_rows_to_csv
+# ============================================================
+
+
+def test_sweep_rows_to_csv_writes_header_and_rows(tmp_path):
+    """CSV: header + her satır params+metrikler."""
+    mod = _load_sweep_module()
+    rows = [
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.25,
+         "trade_count": 20, "win_rate": 0.5, "expectancy": 0.3,
+         "profit_factor": 1.5, "max_drawdown_pct": 0.1, "sharpe": 1.2},
+        {"sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25,
+         "trade_count": 5, "win_rate": 0.6, "expectancy": 0.4,
+         "profit_factor": 2.0, "max_drawdown_pct": 0.08, "sharpe": 1.5},
+    ]
+    out = tmp_path / "results.csv"
+    mod.sweep_rows_to_csv(rows, out)
+    assert out.exists()
+    with out.open(newline="", encoding="utf-8") as fh:
+        reader = list(csv.DictReader(fh))
+    assert len(reader) == 2
+    assert reader[0]["sl_min_atr_multiple"] == "0.25"
+    assert reader[0]["trade_count"] == "20"
+    assert reader[1]["win_rate"] == "0.6"
+
+
+def test_sweep_rows_to_csv_empty_rows_writes_nothing_or_header(tmp_path):
+    """Boş satır listesi → çökmemeli."""
+    mod = _load_sweep_module()
+    out = tmp_path / "empty.csv"
+    mod.sweep_rows_to_csv([], out)
+    # Dosya oluşmuş olabilir (sadece header) ya da hiç — çökmemesi yeterli
+    assert True
+
+
+# ============================================================
+# select_top_candidates — ratchet kuralı
+# ============================================================
+
+
+def test_select_top_candidates_ratchet_rule():
+    """Ratchet: expectancy >= baseline VE trade_count baseline'dan fazla VE
+    max_dd <= baseline*1.2 olan kombinasyonlar kabul edilir."""
+    mod = _load_sweep_module()
+    baseline_expectancy = 0.30
+    baseline_max_dd = 0.10
+    baseline_trade_count = 5
+    rows = [
+        # Kabul: expectancy korunmuş, trade arttı, dd sınırda
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "trade_count": 20, "expectancy": 0.32, "max_drawdown_pct": 0.11,
+         "win_rate": 0.5},
+        # Red: expectancy düştü
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.25,
+         "trade_count": 25, "expectancy": 0.20, "max_drawdown_pct": 0.10,
+         "win_rate": 0.45},
+        # Red: max_dd baseline*1.2'yi (0.12) aştı
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.25,
+         "trade_count": 18, "expectancy": 0.35, "max_drawdown_pct": 0.15,
+         "win_rate": 0.5},
+        # Red: trade count artmadı (setup akışı açılmadı)
+        {"sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25,
+         "trade_count": 5, "expectancy": 0.40, "max_drawdown_pct": 0.08,
+         "win_rate": 0.6},
+    ]
+    accepted = mod.select_top_candidates(
+        rows, n=3,
+        baseline_expectancy=baseline_expectancy,
+        baseline_max_dd=baseline_max_dd,
+        baseline_trade_count=baseline_trade_count,
+    )
+    # Sadece ilk satır ratchet'i geçer
+    assert len(accepted) == 1
+    assert accepted[0]["sl_min_atr_multiple"] == 0.25
+    assert accepted[0]["sl_band_buffer_mult"] == 0.5
+
+
+def test_select_top_candidates_skips_errored_rows():
+    """error işaretli satırlar ratchet'e girmeden elenmeli."""
+    mod = _load_sweep_module()
+    rows = [
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "error": "backtest failed"},
+        {"sl_min_atr_multiple": 0.3, "sl_band_buffer_mult": 0.25,
+         "trade_count": 20, "expectancy": 0.35, "max_drawdown_pct": 0.10,
+         "win_rate": 0.5},
+    ]
+    accepted = mod.select_top_candidates(
+        rows, n=5, baseline_expectancy=0.30, baseline_max_dd=0.10,
+        baseline_trade_count=5,
+    )
+    # Errored satır atlanır; sağlam satır ratchet'i geçer
+    assert all(not r.get("error") for r in accepted)
+    assert len(accepted) == 1
+
+
+def test_select_top_candidates_ranks_by_expectancy_then_trade_count():
+    """Birden çok kabul → expectancy'ye göre sırala (yüksek önce)."""
+    mod = _load_sweep_module()
+    rows = [
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.5,
+         "trade_count": 15, "expectancy": 0.33, "max_drawdown_pct": 0.10,
+         "win_rate": 0.5},
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "trade_count": 20, "expectancy": 0.40, "max_drawdown_pct": 0.11,
+         "win_rate": 0.52},
+    ]
+    accepted = mod.select_top_candidates(
+        rows, n=5, baseline_expectancy=0.30, baseline_max_dd=0.10,
+        baseline_trade_count=5,
+    )
+    assert len(accepted) == 2
+    # En yüksek expectancy ilk sırada
+    assert accepted[0]["expectancy"] == 0.40
+
+
+# ============================================================
+# config sl param override — handoff Adım 5.4 test_config_sl_params_override
+# ============================================================
+
+
+def test_config_sl_params_are_overridable():
+    """sl_min_atr_multiple + sl_band_buffer_mult SMCConfig field'ı; sweep
+    harness bunları runtime'da set edebilmeli (config exposure ZATEN var,
+    refactor gerekmedi — bu test o varsayımı kilitler)."""
+    from smc_engine.config import SMCConfig
+    cfg = SMCConfig()
+    # Field'lar mevcut + yazılabilir
+    cfg.sl_min_atr_multiple = 0.3
+    cfg.sl_band_buffer_mult = 0.5
+    assert cfg.sl_min_atr_multiple == 0.3
+    assert cfg.sl_band_buffer_mult == 0.5
+
+
+def test_config_sl_params_yaml_override():
+    """config.yaml'dan sl param override edilebilir (load_config düz scalar)."""
+    import tempfile
+    import os
+    from smc_engine.config import load_config
+    yaml_content = "sl_min_atr_multiple: 0.35\nsl_band_buffer_mult: 0.45\n"
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(yaml_content)
+        cfg = load_config(path)
+        assert cfg.sl_min_atr_multiple == 0.35
+        assert cfg.sl_band_buffer_mult == 0.45
+    finally:
+        os.unlink(path)
+
+
+# ============================================================
+# run_walk_forward_validation — handoff Adım 5.3
+# En iyi adayları out-of-sample doğrula; overfit ele.
+# ============================================================
+
+
+def test_run_walk_forward_validation_calls_wf_per_candidate():
+    """Her aday kombinasyon için walk_forward çağrılır; out-of-sample
+    (test_metrics) ortalaması toplanır."""
+    mod = _load_sweep_module()
+    candidates = [
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.40, "trade_count": 20},
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.33, "trade_count": 15},
+    ]
+    wf_calls = []
+
+    def fake_wf(params):
+        wf_calls.append(params)
+        # 2 pencere — her birinin test_metrics'i
+        return [
+            {"test_metrics": {"expectancy": 0.35, "trade_count": 8,
+                              "win_rate": 0.5}},
+            {"test_metrics": {"expectancy": 0.30, "trade_count": 7,
+                              "win_rate": 0.48}},
+        ]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    assert len(results) == 2
+    assert len(wf_calls) == 2
+    # Her sonuç in-sample expectancy + out-of-sample ortalama içermeli
+    for r in results:
+        assert "in_sample_expectancy" in r
+        assert "oos_expectancy_mean" in r
+        assert "oos_window_count" in r
+    # İlk aday: oos expectancy ort = (0.35+0.30)/2 = 0.325
+    assert abs(results[0]["oos_expectancy_mean"] - 0.325) < 1e-9
+    assert results[0]["oos_window_count"] == 2
+
+
+def test_run_walk_forward_validation_flags_overfit():
+    """OOS expectancy in-sample'ın belirgin altındaysa overfit işaretle."""
+    mod = _load_sweep_module()
+    candidates = [
+        # in-sample 0.40 ama OOS çöküyor → overfit
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.40, "trade_count": 20},
+    ]
+
+    def fake_wf(params):
+        return [
+            {"test_metrics": {"expectancy": 0.05, "trade_count": 3,
+                              "win_rate": 0.3}},
+            {"test_metrics": {"expectancy": 0.02, "trade_count": 2,
+                              "win_rate": 0.3}},
+        ]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    assert results[0]["overfit"] is True
+
+
+def test_run_walk_forward_validation_no_overfit_when_oos_holds():
+    """OOS expectancy in-sample'a yakınsa overfit DEĞİL."""
+    mod = _load_sweep_module()
+    candidates = [
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.33, "trade_count": 15},
+    ]
+
+    def fake_wf(params):
+        return [
+            {"test_metrics": {"expectancy": 0.31, "trade_count": 7,
+                              "win_rate": 0.5}},
+            {"test_metrics": {"expectancy": 0.30, "trade_count": 6,
+                              "win_rate": 0.49}},
+        ]
+
+    results = mod.run_walk_forward_validation(candidates, fake_wf)
+    assert results[0]["overfit"] is False
+
+
+# ============================================================
+# sweep_rows_to_csv — walk-forward (farklı şema) union-of-keys (M-7)
+# ============================================================
+
+
+def test_sweep_rows_to_csv_walk_forward_schema_union_of_keys(tmp_path):
+    """Walk-forward sonuçları sweep'ten farklı kolonlar taşır; CSV writer
+    anahtar birleşimini (ilk-görülme sırası) kullanmalı — sabit _CSV_COLUMNS
+    bunları düşürmez."""
+    mod = _load_sweep_module()
+    wf_rows = [
+        {"sl_min_atr_multiple": 0.25, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.40, "trade_count": 20,
+         "in_sample_expectancy": 0.40, "oos_expectancy_mean": 0.325,
+         "oos_window_count": 2, "overfit": False},
+        {"sl_min_atr_multiple": 0.30, "sl_band_buffer_mult": 0.5,
+         "expectancy": 0.33, "trade_count": 15,
+         "in_sample_expectancy": 0.33, "oos_expectancy_mean": 0.10,
+         "oos_window_count": 2, "overfit": True},
+    ]
+    out = tmp_path / "wf.csv"
+    mod.sweep_rows_to_csv(wf_rows, out)
+    with out.open(newline="", encoding="utf-8") as fh:
+        reader = list(csv.DictReader(fh))
+    assert len(reader) == 2
+    # walk-forward'a özgü kolonlar CSV'de korunmalı
+    assert "oos_expectancy_mean" in reader[0]
+    assert "overfit" in reader[0]
+    assert reader[0]["oos_expectancy_mean"] == "0.325"
+    assert reader[1]["overfit"] == "True"
+
+
+# ============================================================
+# CLI — I-1 (all-failed exit) + I-2 (baseline footgun) code review fix
+# ============================================================
+
+
+def test_cli_all_combos_failed_returns_exit_3(monkeypatch, tmp_path):
+    """I-1: tüm kombinasyonlar fail ederse main() exit 3 döner (broken
+    harness sessizce exit 0 vermesin)."""
+    mod = _load_sweep_module()
+
+    def always_fail(params):
+        raise RuntimeError("simulated total harness failure")
+
+    # _make_real_backtest_fn'i her zaman fail eden fonksiyon döndürecek
+    monkeypatch.setattr(mod, "_make_real_backtest_fn",
+                        lambda **kw: always_fail)
+    out = tmp_path / "results.csv"
+    rc = mod.main([
+        "--sl-min-atr", "0.25,0.5", "--sl-band-buffer", "0.25",
+        "--out", str(out),
+    ])
+    assert rc == 3
+
+
+def test_cli_walk_forward_without_baseline_or_05_returns_exit_2(monkeypatch, tmp_path):
+    """I-2: --walk-forward + grid'de 0.5 yok + --baseline-* verilmedi →
+    exit 2 (no-op ratchet'i reddet, MiniMax'a yanlış aday gitmesin)."""
+    mod = _load_sweep_module()
+
+    def fake_backtest(params):
+        return {
+            "trade_count": 10, "win_rate": 0.5, "expectancy": 0.3,
+            "profit_factor": 1.5, "max_drawdown_pct": 0.1, "sharpe": 1.0,
+        }
+
+    monkeypatch.setattr(mod, "_make_real_backtest_fn",
+                        lambda **kw: fake_backtest)
+    out = tmp_path / "results.csv"
+    # Grid'de 0.5 YOK, --baseline-* YOK → I-2 hata
+    rc = mod.main([
+        "--sl-min-atr", "0.25,0.30", "--sl-band-buffer", "0.25",
+        "--out", str(out), "--walk-forward",
+    ])
+    assert rc == 2
+
+
+def test_cli_walk_forward_with_explicit_baseline_proceeds(monkeypatch, tmp_path):
+    """I-2: grid'de 0.5 olmasa da --baseline-* explicit verilirse devam eder."""
+    mod = _load_sweep_module()
+
+    def fake_backtest(params):
+        return {
+            "trade_count": 10, "win_rate": 0.5, "expectancy": 0.3,
+            "profit_factor": 1.5, "max_drawdown_pct": 0.1, "sharpe": 1.0,
+        }
+
+    def fake_wf(**kw):
+        def run_wf(params):
+            return [{"test_metrics": {"expectancy": 0.28, "trade_count": 5,
+                                      "win_rate": 0.5}}]
+        return run_wf
+
+    monkeypatch.setattr(mod, "_make_real_backtest_fn",
+                        lambda **kw: fake_backtest)
+    monkeypatch.setattr(mod, "_make_real_walk_forward_fn", fake_wf)
+    out = tmp_path / "results.csv"
+    rc = mod.main([
+        "--sl-min-atr", "0.25,0.30", "--sl-band-buffer", "0.25",
+        "--out", str(out), "--walk-forward",
+        "--baseline-expectancy", "0.25",
+        "--baseline-max-dd", "0.12",
+        "--baseline-trade-count", "3",
+    ])
+    assert rc == 0
+
+
+def test_cli_normal_sweep_returns_exit_0(monkeypatch, tmp_path):
+    """Sağlıklı sweep (walk-forward yok) → exit 0 + CSV yazılır."""
+    mod = _load_sweep_module()
+
+    def fake_backtest(params):
+        return {
+            "trade_count": 8, "win_rate": 0.55, "expectancy": 0.35,
+            "profit_factor": 1.8, "max_drawdown_pct": 0.09, "sharpe": 1.3,
+        }
+
+    monkeypatch.setattr(mod, "_make_real_backtest_fn",
+                        lambda **kw: fake_backtest)
+    out = tmp_path / "results.csv"
+    rc = mod.main([
+        "--sl-min-atr", "0.25,0.5", "--sl-band-buffer", "0.25",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert out.exists()
