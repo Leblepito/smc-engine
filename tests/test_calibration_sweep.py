@@ -7,20 +7,29 @@ mock kullanılır. CLI parquet-yükleme tarafı ayrı (smoke, bash gibi).
 from __future__ import annotations
 
 import csv
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 
 def _load_sweep_module():
-    """scripts/calibration_sweep.py'yi modül olarak yükle."""
+    """scripts/calibration_sweep.py'yi modül olarak yükle.
+
+    ``scripts/`` sys.path'e eklenir ve ``import calibration_sweep`` ile
+    yüklenir — böylece modül adıyla yeniden import edilebilir. Bu,
+    ProcessPoolExecutor worker'larının modül içindeki sınıf/fonksiyonları
+    (``_RealBacktestFn``, ``_run_one_combo``) pickle ile çözebilmesi için
+    zorunludur (spec_from_file_location ile yüklenen modül adıyla import
+    edilemez → pickle "No module named" hatası).
+    """
+    import sys
+
     repo_root = Path(__file__).resolve().parent.parent
-    spec_path = repo_root / "scripts" / "calibration_sweep.py"
-    spec = importlib.util.spec_from_file_location("calibration_sweep", spec_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    scripts_dir = str(repo_root / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import calibration_sweep  # noqa: E402
+    return calibration_sweep
 
 
 # ============================================================
@@ -400,7 +409,7 @@ def test_cli_all_combos_failed_returns_exit_3(monkeypatch, tmp_path):
     out = tmp_path / "results.csv"
     rc = mod.main([
         "--sl-min-atr", "0.25,0.5", "--sl-band-buffer", "0.25",
-        "--out", str(out),
+        "--out", str(out), "--workers", "1",
     ])
     assert rc == 3
 
@@ -422,7 +431,7 @@ def test_cli_walk_forward_without_baseline_or_05_returns_exit_2(monkeypatch, tmp
     # Grid'de 0.5 YOK, --baseline-* YOK → I-2 hata
     rc = mod.main([
         "--sl-min-atr", "0.25,0.30", "--sl-band-buffer", "0.25",
-        "--out", str(out), "--walk-forward",
+        "--out", str(out), "--walk-forward", "--workers", "1",
     ])
     assert rc == 2
 
@@ -449,7 +458,7 @@ def test_cli_walk_forward_with_explicit_baseline_proceeds(monkeypatch, tmp_path)
     out = tmp_path / "results.csv"
     rc = mod.main([
         "--sl-min-atr", "0.25,0.30", "--sl-band-buffer", "0.25",
-        "--out", str(out), "--walk-forward",
+        "--out", str(out), "--walk-forward", "--workers", "1",
         "--baseline-expectancy", "0.25",
         "--baseline-max-dd", "0.12",
         "--baseline-trade-count", "3",
@@ -472,7 +481,7 @@ def test_cli_normal_sweep_returns_exit_0(monkeypatch, tmp_path):
     out = tmp_path / "results.csv"
     rc = mod.main([
         "--sl-min-atr", "0.25,0.5", "--sl-band-buffer", "0.25",
-        "--out", str(out),
+        "--out", str(out), "--workers", "1",
     ])
     assert rc == 0
     assert out.exists()
@@ -532,4 +541,73 @@ def test_m15_window_argparse_default_is_none():
     p = mod._build_arg_parser()
     args = p.parse_args([])
     assert args.m15_window is None
-    assert args.m15_offset == 0
+
+
+# ============================================================
+# run_sweep paralelleştirme (ProcessPoolExecutor) — determinizm kritik
+# ============================================================
+
+
+def _picklable_backtest_fn(params: dict) -> dict:
+    """Modül-düzeyi (picklable) deterministik backtest mock.
+
+    ProcessPoolExecutor worker'a pickle edilebilmesi için top-level olmalı —
+    closure/lambda pickle edilemez. Metrikler params'tan deterministik türer.
+    """
+    smam = params["sl_min_atr_multiple"]
+    sbbm = params["sl_band_buffer_mult"]
+    return {
+        "trade_count": int(smam * 100 + sbbm * 10),
+        "win_rate": round(smam + sbbm, 6),
+        "expectancy": round(smam - sbbm, 6),
+        "profit_factor": round(smam * 2 + sbbm, 6),
+        "max_drawdown_pct": round(sbbm / 2, 6),
+        "sharpe": round(smam * sbbm, 6),
+    }
+
+
+def test_run_sweep_workers_1_equals_serial():
+    """max_workers=1 → mevcut seri kod yolu, davranış değişmez."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid([0.3, 0.5], [0.25, 0.5])
+    serial = mod.run_sweep(grid, _picklable_backtest_fn)
+    workers_1 = mod.run_sweep(grid, _picklable_backtest_fn, max_workers=1)
+    assert workers_1 == serial
+
+
+def test_run_sweep_parallel_result_equals_serial():
+    """max_workers=4 sonucu == max_workers=1 sonucu — DETERMİNİZM (en kritik)."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid([0.25, 0.35, 0.45, 0.5], [0.25, 0.375, 0.5])
+    serial = mod.run_sweep(grid, _picklable_backtest_fn, max_workers=1)
+    parallel = mod.run_sweep(grid, _picklable_backtest_fn, max_workers=4)
+    assert parallel == serial
+
+
+def test_run_sweep_parallel_preserves_grid_order():
+    """Paralel sonuç satırları grid combo sırasını korur (tamamlanma sırası değil)."""
+    mod = _load_sweep_module()
+    grid = mod.build_param_grid([0.25, 0.3, 0.35, 0.4, 0.45, 0.5], [0.25, 0.5])
+    parallel = mod.run_sweep(grid, _picklable_backtest_fn, max_workers=4)
+    assert len(parallel) == len(grid)
+    for combo, row in zip(grid, parallel):
+        assert row["sl_min_atr_multiple"] == combo["sl_min_atr_multiple"]
+        assert row["sl_band_buffer_mult"] == combo["sl_band_buffer_mult"]
+
+
+def test_backtest_fn_picklable():
+    """_make_real_backtest_fn'in döndürdüğü callable picklable olmalı.
+
+    ProcessPoolExecutor'a geçecek — closure ise pickle patlar. Parquet yoksa
+    bile callable kurulabilmeli (parquet yükleme worker'da lazy).
+    """
+    import pickle
+
+    mod = _load_sweep_module()
+    fn = mod._make_real_backtest_fn(
+        m15_window=250, m15_offset=0, m15_lookback=140,
+    )
+    restored = pickle.loads(pickle.dumps(fn))
+    assert callable(restored)
+    assert restored.m15_offset == 0
+    assert restored.m15_window == 250

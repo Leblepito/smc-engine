@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import csv
 import itertools
+import os
 import sys
 import traceback
 from datetime import date
@@ -61,30 +62,63 @@ def build_param_grid(
     return grid
 
 
+def _run_one_combo(
+    params: dict, run_backtest_fn: Callable[[dict], dict],
+) -> dict:
+    """Tek bir kombinasyonu çalıştır → satır (params ∪ metrics | params ∪ error).
+
+    Exception sweep'i çökertmez — ``error`` alanına yazılır. Hem seri hem
+    paralel kod yolu bu fonksiyonu kullanır (tutarlı satır şeması).
+    """
+    row = dict(params)
+    try:
+        metrics = run_backtest_fn(params)
+        for k in _METRIC_KEYS:
+            row[k] = metrics.get(k)
+    except Exception as exc:  # backtest tek kombinasyonda patladı
+        row["error"] = f"{type(exc).__name__}: {exc}"
+    return row
+
+
 def run_sweep(
     grid: list[dict],
     run_backtest_fn: Callable[[dict], dict],
+    max_workers: int = 1,
 ) -> list[dict]:
     """Grid'in her kombinasyonu için ``run_backtest_fn(params)`` çağır.
 
     ``run_backtest_fn`` bir metrics dict döndürmeli (trade_count, win_rate,
     expectancy, ...). Bir kombinasyon exception fırlatırsa sweep ÇÖKMEZ —
-    o satır ``error`` alanı ile kaydedilir, sweep devam eder (uzun grid'in
-    tek bir kötü kombinasyon yüzünden boşa gitmemesi için).
+    o satır ``error`` alanı ile kaydedilir, sweep devam eder.
 
-    Returns: her satır = params ∪ metrics (veya params ∪ {error}).
+    ``max_workers``:
+      - ``1`` (varsayılan) → seri kod yolu, geriye tam uyumlu.
+      - ``>1`` → ``ProcessPoolExecutor`` ile combo'lar paralel. Combo'lar
+        bağımsız (her biri taze ``SMCConfig``). DETERMİNİZM: sonuçlar
+        tamamlanma sırasında değil, **grid combo sırasında** döndürülür —
+        çıktı seri çalıştırmayla byte-identical. ``run_backtest_fn``
+        picklable olmalı (paralel modda); ``_RealBacktestFn`` öyledir.
+
+    Returns: her satır = params ∪ metrics (veya params ∪ {error}),
+    grid sırasında.
     """
-    rows: list[dict] = []
-    for params in grid:
-        row = dict(params)
-        try:
-            metrics = run_backtest_fn(params)
-            for k in _METRIC_KEYS:
-                row[k] = metrics.get(k)
-        except Exception as exc:  # backtest tek kombinasyonda patladı
-            row["error"] = f"{type(exc).__name__}: {exc}"
-        rows.append(row)
-    return rows
+    if max_workers <= 1:
+        return [_run_one_combo(params, run_backtest_fn) for params in grid]
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    results: list[Optional[dict]] = [None] * len(grid)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Future -> grid index eşlemesi; sonuçları index'e göre yerleştir
+        # (as_completed tamamlanma sırası verir → determinizm için index şart).
+        future_to_idx = {
+            executor.submit(_run_one_combo, params, run_backtest_fn): idx
+            for idx, params in enumerate(grid)
+        }
+        for future in future_to_idx:
+            idx = future_to_idx[future]
+            results[idx] = future.result()
+    return [r for r in results if r is not None]
 
 
 def sweep_rows_to_csv(rows: list[dict], path, columns: Optional[tuple] = None) -> None:
@@ -222,49 +256,96 @@ def _slice_m15(m15_full, m15_offset: int, m15_window: Optional[int]):
     return m15_full.iloc[m15_offset:m15_offset + m15_window]
 
 
-def _make_real_backtest_fn(
-    m15_window: Optional[int], m15_offset: int, m15_lookback: int,
-):
-    """data/btc parquet'ten OHLCV yükleyip harness.run çağıran fonksiyon üret.
+def _btc_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "data" / "btc"
 
-    test_backtest_e2e.py'deki _load_dataset desenini izler. m15_window None
-    ise tum M15 parquet kullanilir; verilirse sinirli pencere (perf icin).
-    """
-    import os
-    from smc_engine.config import SMCConfig
-    from smc_engine.types import TimeFrame
-    from backtest.harness import run as harness_run
-    from data.fetch import load_parquet
-    from data.resample import resample_ohlcv
 
-    btc_dir = Path(__file__).resolve().parent.parent / "data" / "btc"
+def _assert_btc_parquet_exists() -> None:
+    """D1/H4/H1/M15 parquet'lerinin varlığını doğrula; eksikse FileNotFoundError."""
+    btc_dir = _btc_dir()
     for tf in ("D1", "H4", "H1", "M15"):
         if not (btc_dir / f"BTCUSDT_{tf}.parquet").exists():
             raise FileNotFoundError(
                 f"data/btc/BTCUSDT_{tf}.parquet yok — examples/run_btc.py ile üret"
             )
 
+
+def _load_btc_ohlcv(m15_window: Optional[int], m15_offset: int) -> dict:
+    """data/btc parquet'ten OHLCV sozlugu yukle (D1/H4/H8/M15).
+
+    M15 _slice_m15 ile dilimlenir. Parquet eksikse FileNotFoundError.
+    """
+    from smc_engine.types import TimeFrame
+    from data.fetch import load_parquet
+    from data.resample import resample_ohlcv
+
+    _assert_btc_parquet_exists()
+    btc_dir = _btc_dir()
     d1 = load_parquet(str(btc_dir / "BTCUSDT_D1.parquet"))
     h4 = load_parquet(str(btc_dir / "BTCUSDT_H4.parquet"))
     h1 = load_parquet(str(btc_dir / "BTCUSDT_H1.parquet"))
     h8 = resample_ohlcv(h1, "H8")
     m15_full = load_parquet(str(btc_dir / "BTCUSDT_M15.parquet"))
     m15_slice = _slice_m15(m15_full, m15_offset, m15_window)
+    return {
+        TimeFrame.D1: d1, TimeFrame.H4: h4,
+        TimeFrame.H8: h8, TimeFrame.M15: m15_slice,
+    }
 
-    def run_backtest(params: dict) -> dict:
+
+class _RealBacktestFn:
+    """Picklable backtest callable — closure yerine sınıf (ProcessPoolExecutor).
+
+    Yalnızca skaler pencere parametrelerini taşır; OHLCV parquet ilk çağrıda
+    LAZY yüklenir (her worker süreci kendi verisini yükler — shared memory
+    gereksiz). __getstate__ yüklü DataFrame'leri pickle dışında tutar.
+    """
+
+    def __init__(self, m15_window: Optional[int], m15_offset: int,
+                 m15_lookback: int):
+        self.m15_window = m15_window
+        self.m15_offset = m15_offset
+        self.m15_lookback = m15_lookback
+        self._ohlcv = None
+
+    def __getstate__(self) -> dict:
+        # Yüklü OHLCV'yi pickle ETME — worker kendi yükler (lazy).
+        return {
+            "m15_window": self.m15_window,
+            "m15_offset": self.m15_offset,
+            "m15_lookback": self.m15_lookback,
+            "_ohlcv": None,
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+    def __call__(self, params: dict) -> dict:
+        from smc_engine.config import SMCConfig
+        from backtest.harness import run as harness_run
+
+        if self._ohlcv is None:
+            self._ohlcv = _load_btc_ohlcv(self.m15_window, self.m15_offset)
         cfg = SMCConfig()
         cfg.sl_min_atr_multiple = params["sl_min_atr_multiple"]
         cfg.sl_band_buffer_mult = params["sl_band_buffer_mult"]
-        ohlcv = {
-            TimeFrame.D1: d1, TimeFrame.H4: h4,
-            TimeFrame.H8: h8, TimeFrame.M15: m15_slice,
-        }
         result = harness_run(
-            ohlcv, cfg, initial_equity=10_000.0, m15_lookback=m15_lookback,
+            self._ohlcv, cfg, initial_equity=10_000.0,
+            m15_lookback=self.m15_lookback,
         )
         return result.metrics
 
-    return run_backtest
+
+def _make_real_backtest_fn(
+    m15_window: Optional[int], m15_offset: int, m15_lookback: int,
+):
+    """Picklable backtest callable üret (``_RealBacktestFn``).
+
+    Parquet ilk çağrıda lazy yüklenir; bu nedenle callable, parquet yokken
+    de kurulabilir (ProcessPoolExecutor'a güvenle pickle edilir). Eksik
+    parquet ilk ``__call__``'da ``FileNotFoundError`` fırlatır.
+    """
+    return _RealBacktestFn(m15_window, m15_offset, m15_lookback)
 
 
 def _make_real_walk_forward_fn(
@@ -322,6 +403,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="M15 window start offset (default 0 = dataset start).")
     p.add_argument("--m15-lookback", type=int, default=140,
                    help="harness.run per-call M15 slice limit.")
+    p.add_argument("--workers", type=int, default=os.cpu_count() or 1,
+                   help="Parallel combo workers (ProcessPoolExecutor). "
+                        "1 = serial. Default = CPU count.")
     p.add_argument("--out", default=None,
                    help="CSV output path (default: logs/calibration/"
                         "calibration-results-YYYYMMDD.csv).")
@@ -358,17 +442,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     print(f"[calibration_sweep] grid: {len(grid)} combinations")
 
+    # Parquet varlığını sweep ÖNCESİ doğrula — eksikse exit 2 (data hatası,
+    # kalibrasyon sonucu değil). Backtest fn lazy yüklediği için bu kontrol
+    # ayrı; aksi halde tüm combo'lar FileNotFoundError ile patlayıp I-1
+    # exit 3'e düşerdi (yanlış teşhis: harness bug'ı sanılır).
     try:
-        backtest_fn = _make_real_backtest_fn(
-            m15_window=args.m15_window,
-            m15_offset=args.m15_offset,
-            m15_lookback=args.m15_lookback,
-        )
+        _assert_btc_parquet_exists()
     except FileNotFoundError as exc:
         print(f"[calibration_sweep] ERROR: {exc}", file=sys.stderr)
         return 2
 
-    rows = run_sweep(grid, backtest_fn)
+    backtest_fn = _make_real_backtest_fn(
+        m15_window=args.m15_window,
+        m15_offset=args.m15_offset,
+        m15_lookback=args.m15_lookback,
+    )
+
+    rows = run_sweep(grid, backtest_fn, max_workers=args.workers)
 
     out_path = args.out or (
         f"logs/calibration/calibration-results-{date.today().isoformat()}.csv"
