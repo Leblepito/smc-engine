@@ -875,3 +875,125 @@ def test_setup_builder_deterministic_with_config_tuning(config):
     assert a is not None and b is not None
     assert a.entry == b.entry and a.sl == b.sl and a.tp == b.tp
     assert a.confluence_score == b.confluence_score
+
+
+# ============================================================
+# İŞ 2026-05-20 — NoSetupReason enum + BuildResult diagnostics
+# build() davranış-koruyucu kalır; build_with_diagnostics() spesifik
+# erken-return sebebini + ölçülen değerleri (diagnostics) döner.
+# ============================================================
+
+
+def test_no_setup_reason_enum_has_required_members():
+    """NoSetupReason build()'in tüm gerçek erken-return noktalarını kapsar."""
+    from smc_engine.setup_builder import NoSetupReason
+    names = {m.name for m in NoSetupReason}
+    # build()'de fiilen var olan erken-return'ler:
+    assert "NO_HTF_BIAS" in names         # bias NEUTRAL
+    assert "NO_POI" in names              # yön-uyumlu aday POI yok
+    assert "LOW_CONFLUENCE" in names      # best_score < confluence_min_score
+    assert "SL_GEOMETRY_TOO_TIGHT" in names  # sl_distance < sl_min_atr*ATR
+    assert "SL_GEOMETRY_INVALID" in names    # sl_distance <= 0 (entry==sl)
+
+
+def test_build_with_diagnostics_no_htf_bias():
+    """htf_bias NEUTRAL → setup None, reason NO_HTF_BIAS."""
+    from smc_engine.setup_builder import build_with_diagnostics, NoSetupReason
+    pic = _picture_with_atr(htf_bias=Bias.NEUTRAL, htf_range=_htf_range())
+    result = build_with_diagnostics(pic, SMCConfig())
+    assert result.setup is None
+    assert result.no_setup_reason is NoSetupReason.NO_HTF_BIAS
+
+
+def test_build_with_diagnostics_no_poi():
+    """Bias var ama yön-uyumlu POI yok → reason NO_POI."""
+    from smc_engine.setup_builder import build_with_diagnostics, NoSetupReason
+    pic = _picture_with_atr(
+        htf_bias=Bias.BULLISH, htf_range=_htf_range(), active_pois=[],
+    )
+    result = build_with_diagnostics(pic, SMCConfig())
+    assert result.setup is None
+    assert result.no_setup_reason is NoSetupReason.NO_POI
+
+
+def test_build_with_diagnostics_low_confluence():
+    """best_score < confluence_min_score → reason LOW_CONFLUENCE + diagnostics."""
+    from smc_engine.setup_builder import build_with_diagnostics, NoSetupReason
+    dz = _demand_zone(status=ZoneStatus.FRESH)
+    pic = _picture_with_atr(
+        htf_range=_htf_range(), active_pois=[_poi_zone(dz)],
+    )
+    cfg = SMCConfig()
+    cfg.confluence_min_score = 0.99  # imkansız yüksek eşik → kesin reddet
+    result = build_with_diagnostics(pic, cfg)
+    assert result.setup is None
+    assert result.no_setup_reason is NoSetupReason.LOW_CONFLUENCE
+    # diagnostics ölçülen skoru + eşiği taşımalı
+    assert "confluence_score" in result.diagnostics
+    assert "confluence_threshold" in result.diagnostics
+    assert result.diagnostics["confluence_threshold"] == 0.99
+    assert result.diagnostics["confluence_score"] < 0.99
+
+
+def test_build_with_diagnostics_sl_geometry_too_tight():
+    """SL mesafesi sl_min_atr_multiple*ATR altında → SL_GEOMETRY_TOO_TIGHT."""
+    from smc_engine.setup_builder import build_with_diagnostics, NoSetupReason
+    dz = _demand_zone(top=93.2, bottom=93.0)  # çok dar band → küçük SL
+    pic = _picture_with_atr(
+        h4_atr=50.0,  # büyük ATR → 0.5*50=25 eşik, dar SL altında kalır
+        htf_range=_htf_range(),
+        active_pois=[_poi_zone(dz)],
+        current_price=93.1,
+    )
+    cfg = SMCConfig()
+    cfg.sl_min_atr_multiple = 0.5
+    cfg.confluence_min_score = 0.0  # confluence gate'i geç, SL'e ulaş
+    result = build_with_diagnostics(pic, cfg)
+    assert result.setup is None
+    assert result.no_setup_reason is NoSetupReason.SL_GEOMETRY_TOO_TIGHT
+    # diagnostics: ölçülen sl_atr_ratio + eşik
+    assert "sl_atr_ratio" in result.diagnostics
+    assert "sl_min_atr_multiple" in result.diagnostics
+    assert result.diagnostics["sl_min_atr_multiple"] == 0.5
+    assert result.diagnostics["sl_atr_ratio"] < 0.5
+
+
+def test_build_with_diagnostics_success_has_setup_no_reason():
+    """Geçerli setup → setup dolu, no_setup_reason None, diagnostics yine dolu."""
+    from smc_engine.setup_builder import build_with_diagnostics
+    dz = _demand_zone()
+    pic = _picture_with_atr(
+        h4_atr=2.0, htf_range=_htf_range(), active_pois=[_poi_zone(dz)],
+    )
+    result = build_with_diagnostics(pic, SMCConfig())
+    assert result.setup is not None
+    assert result.no_setup_reason is None
+    # diagnostics başarı durumunda da confluence_score taşır (debug için)
+    assert "confluence_score" in result.diagnostics
+
+
+def test_build_is_wrapper_over_build_with_diagnostics():
+    """build() davranış-koruyucu: build_with_diagnostics().setup ile aynı.
+
+    Kritik: backtest + smoke build() imzasına bağımlı; davranış birebir.
+    Setup bir dataclass — tüm 12 alanı tek eşitlik check'i ile doğrula
+    (Minor code review: bu test behavior-preservation kontratının bekçisi)."""
+    from smc_engine.setup_builder import build_with_diagnostics
+    dz = _demand_zone()
+    pic = _picture_with_atr(
+        h4_atr=2.0, htf_range=_htf_range(), active_pois=[_poi_zone(dz)],
+    )
+    cfg = SMCConfig()
+    legacy = build(pic, cfg)
+    diag = build_with_diagnostics(pic, cfg)
+    # build() tam olarak build_with_diagnostics().setup döndürmeli
+    assert (legacy is None) == (diag.setup is None)
+    if legacy is not None:
+        # Setup dataclass — tüm alanların birebir eşitliği
+        assert legacy == diag.setup
+
+
+def test_build_with_diagnostics_none_case_also_makes_build_return_none():
+    """No-setup senaryosunda build() None döner (eski davranış korunur)."""
+    pic = _picture_with_atr(htf_bias=Bias.NEUTRAL, htf_range=_htf_range())
+    assert build(pic, SMCConfig()) is None

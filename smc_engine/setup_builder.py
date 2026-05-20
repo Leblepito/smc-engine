@@ -30,6 +30,8 @@ arasi karsilastirilabilir kalsin — Plan Faz 3 tasarim karari #2).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 from smc_engine.types import (
@@ -480,6 +482,41 @@ def _bind_confirmation(
 
 
 # ============================================================
+# Tani — NoSetupReason + BuildResult (İŞ 2026-05-20)
+# ============================================================
+
+
+class NoSetupReason(Enum):
+    """``build_with_diagnostics()`` neden ``Setup`` üretemedi.
+
+    Yalnızca ``build()``'in FİİLEN var olan erken-return noktalarını
+    listeler — hayalî sebep yok. Tanı log'unda görünür; veri-driven
+    kalibrasyon kararına girdi olur.
+    """
+
+    NO_HTF_BIAS = "no_htf_bias"                  # htf_bias NEUTRAL → yön yok
+    NO_POI = "no_poi"                            # yön-uyumlu aday POI yok
+    LOW_CONFLUENCE = "low_confluence"            # best_score < confluence_min_score
+    SL_GEOMETRY_TOO_TIGHT = "sl_geometry_too_tight"  # sl_distance < sl_min_atr*ATR
+    SL_GEOMETRY_INVALID = "sl_geometry_invalid"  # sl_distance <= 0 (entry == sl)
+
+
+@dataclass
+class BuildResult:
+    """``build_with_diagnostics()`` çıktısı.
+
+    - ``setup`` dolu → ``no_setup_reason`` None (başarı).
+    - ``setup`` None → ``no_setup_reason`` doludur (hangi gate elendi).
+    - ``diagnostics`` her durumda ölçülen ara değerleri taşır (confluence
+      skoru, sl_atr_ratio, aday POI sayısı vb.) — tanı log + debug için.
+    """
+
+    setup: Optional[Setup]
+    no_setup_reason: Optional[NoSetupReason] = None
+    diagnostics: dict = field(default_factory=dict)
+
+
+# ============================================================
 # Ana giris noktasi
 # ============================================================
 
@@ -487,24 +524,40 @@ def _bind_confirmation(
 def build(picture: MarketPicture, config) -> Optional[Setup]:
     """``MarketPicture`` -> en iyi tek ``Setup`` veya ``None``.
 
-    Adimlar:
-      1. Yon: htf_bias BULLISH->LONG, BEARISH->SHORT, NEUTRAL->None.
-      2. Aday POI'ler: ``active_pois`` icinde yon-uyumlu olanlar.
-      3. Her aday icin confluence skoru hesapla; en yuksegi sec.
-      4. confluence_score < confluence_min_score -> None.
-      5. Entry/SL/TP merdiveni uret; SL < sl_min_atr_multiple*ATR -> None.
-      6. M15 yon-uyumlu StructureBreak'i confirmation'a bagla.
+    Davranış-koruyucu ince sarmalayıcı: ``build_with_diagnostics()``'in
+    ``.setup`` alanını döner. Eski imza (``Optional[Setup]``) korunur —
+    backtest harness + smoke_test bu imzaya bağımlı.
 
     Hard gate'ler (HTF uyumu, M15 onay zorunlulugu, min_rr, regime...) BURADA
     DEGIL — risk_guard'da. ``build()`` saf/deterministik.
     """
+    return build_with_diagnostics(picture, config).setup
+
+
+def build_with_diagnostics(picture: MarketPicture, config) -> BuildResult:
+    """``MarketPicture`` -> ``BuildResult`` (setup + tanı sebebi + ölçümler).
+
+    Adimlar (her erken-return noktası spesifik ``NoSetupReason`` set eder):
+      1. Yon: htf_bias BULLISH->LONG, BEARISH->SHORT, NEUTRAL->NO_HTF_BIAS.
+      2. Aday POI'ler: yön-uyumlu yoksa NO_POI.
+      3. Confluence skorla; best_score < esik -> LOW_CONFLUENCE.
+      4. Entry/SL/TP: sl_distance < sl_min_atr*ATR -> SL_GEOMETRY_TOO_TIGHT;
+         sl_distance <= 0 -> SL_GEOMETRY_INVALID.
+      5. M15 yön-uyumlu StructureBreak'i confirmation'a bagla.
+
+    ``build_with_diagnostics()`` saf/deterministik.
+    """
+    diagnostics: dict = {}
+
     # --- 1. Yon ---
     if picture.htf_bias == Bias.BULLISH:
         direction = Direction.LONG
     elif picture.htf_bias == Bias.BEARISH:
         direction = Direction.SHORT
     else:
-        return None  # NEUTRAL -> yon belirsiz
+        diagnostics["htf_bias"] = getattr(picture.htf_bias, "name", str(picture.htf_bias))
+        return BuildResult(setup=None, no_setup_reason=NoSetupReason.NO_HTF_BIAS,
+                           diagnostics=diagnostics)
 
     # --- 2. Aday POI'ler ---
     candidates = [
@@ -512,8 +565,11 @@ def build(picture: MarketPicture, config) -> Optional[Setup]:
         for p in picture.active_pois
         if _poi_band(p) is not None and _poi_direction_aligned(p, direction)
     ]
+    diagnostics["active_poi_count"] = len(picture.active_pois)
+    diagnostics["candidate_poi_count"] = len(candidates)
     if not candidates:
-        return None
+        return BuildResult(setup=None, no_setup_reason=NoSetupReason.NO_POI,
+                           diagnostics=diagnostics)
 
     # --- 3. Confluence skorla + en iyiyi sec (deterministik tie-break) ---
     scored: list[tuple[float, int, POIRef, list[float]]] = []
@@ -536,11 +592,15 @@ def build(picture: MarketPicture, config) -> Optional[Setup]:
     factor_count = sum(
         1 for i in _INDEPENDENT_FACTOR_IDX if best_factors[i] > 0.0
     )
+    diagnostics["confluence_score"] = best_score
+    diagnostics["confluence_factor_count"] = factor_count
 
     # --- 4. Confluence esigi ---
     min_score = getattr(config, "confluence_min_score", 0.4)
+    diagnostics["confluence_threshold"] = min_score
     if best_score < min_score:
-        return None
+        return BuildResult(setup=None, no_setup_reason=NoSetupReason.LOW_CONFLUENCE,
+                           diagnostics=diagnostics)
 
     # --- 5. Entry / SL / TP ---
     entry = _entry_price(best_poi, direction)
@@ -555,23 +615,34 @@ def build(picture: MarketPicture, config) -> Optional[Setup]:
 
     sl_distance = abs(entry - sl)
     sl_min_mult = getattr(config, "sl_min_atr_multiple", 0.5)
+    diagnostics["atr"] = atr_val
+    diagnostics["sl_distance"] = sl_distance
+    diagnostics["sl_min_atr_multiple"] = sl_min_mult
+    # sl_atr_ratio: SL mesafesinin ATR'ye oranı — ATR>0 ise anlamlı.
+    if atr_val > 0:
+        diagnostics["sl_atr_ratio"] = sl_distance / atr_val
     # ATR > 0 ise minimum mesafe kontrolu yap; ATR 0 ise (sentetik/duz veri)
     # kontrol atlanir (anlamli bir esik yok).
     if atr_val > 0 and sl_distance < sl_min_mult * atr_val:
-        return None
+        return BuildResult(setup=None,
+                           no_setup_reason=NoSetupReason.SL_GEOMETRY_TOO_TIGHT,
+                           diagnostics=diagnostics)
     if sl_distance <= 0:
-        return None  # SL = entry -> insa edilemez
+        return BuildResult(setup=None,
+                           no_setup_reason=NoSetupReason.SL_GEOMETRY_INVALID,
+                           diagnostics=diagnostics)
 
     tp = _tp_ladder(entry, sl, direction, config)
     tp_weights = list(_cfg_tp_weights(config))
 
     # rr: TP1'e gore (entry-SL = 1R).
     rr = _compute_rr(entry=entry, sl_distance=sl_distance, tp1=tp[0], direction=direction)
+    diagnostics["rr"] = rr
 
     # --- 6. Confirmation baglama ---
     confirmation = _bind_confirmation(picture, direction)
 
-    return Setup(
+    setup = Setup(
         direction=direction,
         entry=entry,
         sl=sl,
@@ -585,3 +656,4 @@ def build(picture: MarketPicture, config) -> Optional[Setup]:
         created_at=picture.at_timestamp,
         confluence_factor_count=factor_count,
     )
+    return BuildResult(setup=setup, no_setup_reason=None, diagnostics=diagnostics)

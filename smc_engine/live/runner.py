@@ -20,8 +20,8 @@ from smc_engine.integrations._base import ExchangeAdapter
 from smc_engine.live.account_state import build_static_account_state
 from smc_engine.orchestrator import analyze as orchestrator_analyze
 from smc_engine.risk_guard import validate as risk_guard_validate
-from smc_engine.setup_builder import build as build_setup
-from smc_engine.types import Bias, Rejection, TimeFrame, ValidatedSetup
+from smc_engine.setup_builder import build_with_diagnostics
+from smc_engine.types import Rejection, TimeFrame, ValidatedSetup
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +34,27 @@ class _SignalLoggerProtocol(Protocol):
     def emit(self, payload) -> None: ...
 
 
-def _diagnose_no_setup(picture) -> str:
-    """İş 2 (2026-05-19): setup_builder.build() None döndü — sebebi tahmin et.
+def _format_diagnostics(diagnostics: dict) -> str:
+    """BuildResult.diagnostics dict'ini log-friendly key=value string'e çevir.
 
-    build() saf None döndürür; sebep ya HTF bias NEUTRAL (yön yok), ya yön-
-    uyumlu POI yok, ya da confluence skoru eşiğin altında. İlk ikisini
-    picture'dan direkt görebiliriz; üçüncüsü için "low_confluence_or_invalid_sl"
-    fallback. Bu log INFO seviyesinde tick'te bir kez yazılır.
+    Float değerler 4 ondalıkta; tick log'unun key=value şemasıyla uyumlu
+    (analyze_signals.py generic ``key=value`` regex ile parse edebilir).
 
-    Defansif: picture beklenmedik tipte (test mock'larında str gibi) ise
-    "unknown" döner — runner kırılmasın.
+    Format safety (Important code review 2026-05-20): non-float değerlerde
+    boşluk → '_'. Bugün diagnostics sadece sayı + tek-token htf_bias string'i
+    içeriyor; ama beklenmedik bir değer (test mock repr'ı gibi) boşluk
+    taşırsa tek-satır key=value şeması bozulmasın — defense-in-depth.
     """
-    if not hasattr(picture, "htf_bias"):
-        return "unknown"
-    bias = getattr(picture, "htf_bias", None)
-    if bias is Bias.NEUTRAL:
-        return "bias_neutral"
-    active = getattr(picture, "active_pois", None) or []
-    if not active:
-        return "no_active_pois"
-    # Yön belirli + POI var ama setup üretilemedi — confluence eşiği veya
-    # SL geometrisi (sl_min_atr_multiple) sebep. Ayrıştırmak için build()'i
-    # tekrar çağırmamız gerekir; pragmatik olarak ortak etiket.
-    # NOT: "invalid_sl" wording bug imajı verir; "sl_geometry" daha doğru —
-    # sl_min_atr_multiple eşiği "configured behavior" (M2 code review).
-    return "low_confluence_or_sl_geometry"
+    if not diagnostics:
+        return ""
+    parts = []
+    for k, v in diagnostics.items():
+        if isinstance(v, float):
+            parts.append(f"{k}={v:.4f}")
+        else:
+            sval = str(v).replace(" ", "_")
+            parts.append(f"{k}={sval}")
+    return " ".join(parts)
 
 
 class LiveRunner:
@@ -128,27 +124,20 @@ class LiveRunner:
             logger.error("orchestrator failed for %s: %s\n%s", symbol, exc, traceback.format_exc())
             return
 
-        setup = build_setup(picture, self.config)
+        build_result = build_with_diagnostics(picture, self.config)
+        setup = build_result.setup
         if setup is None:
-            # İş 2 (2026-05-19): Sessiz NO_SETUP'ı tanı log'a çevir. Önceki
-            # davranış sadece "return" idi — kullanıcı orchestrator'un neden
-            # üretmediğini göremiyordu. Picture'dan sebep tahmin et.
-            reason = _diagnose_no_setup(picture)
-            bias_obj = getattr(picture, "htf_bias", None)
-            bias_str = getattr(bias_obj, "name", str(bias_obj))
-            active_count = len(getattr(picture, "active_pois", []) or [])
-            try:
-                current_price = float(getattr(picture, "current_price", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                current_price = 0.0
-            # Tek-şema tick log (I2 code review): no_setup/validated_setup/
-            # rejection üçü de aynı format — analyze_signals.py tek regex ile
-            # toplayabilir. gate="none" sentinel (I1) — boş value ambiguity yok.
+            # Refactor (2026-05-20): _diagnose_no_setup heuristic'i kalktı.
+            # build_with_diagnostics() artık SPESİFİK NoSetupReason + ölçülen
+            # diagnostics döner (sl_atr_ratio, confluence_score vb.).
+            reason = build_result.no_setup_reason
+            reason_str = reason.value if reason is not None else "unknown"
+            diag_str = _format_diagnostics(build_result.diagnostics)
+            # Tek-şema tick log (I2): no_setup/validated_setup/rejection aynı
+            # format. gate="none" sentinel (I1) — boş value ambiguity yok.
             logger.info(
-                "tick symbol=%s at_bar=%s kind=no_setup gate=none reason=%s "
-                "bias=%s active_pois=%d current_price=%.2f",
-                symbol, at_bar.isoformat(), reason,
-                bias_str, active_count, current_price,
+                "tick symbol=%s at_bar=%s kind=no_setup gate=none reason=%s %s",
+                symbol, at_bar.isoformat(), reason_str, diag_str,
             )
             return  # rejection değil; üretilemedi
 

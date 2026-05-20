@@ -61,15 +61,19 @@ class FakeAdapter:
 
 
 def test_runner_tick_calls_orchestrator_setup_builder_risk_guard(monkeypatch):
-    """Tick → orchestrator.analyze → setup_builder.build → risk_guard.validate."""
+    """Tick → orchestrator.analyze → setup_builder.build_with_diagnostics → risk_guard."""
+    from smc_engine.setup_builder import NoSetupReason
     end_ts = datetime(2026, 5, 16, 14, 45)
     adapter = FakeAdapter(end_ts=end_ts)
     cfg = SMCConfig()
 
     mock_analyze = MagicMock(return_value="picture_obj")
-    mock_build = MagicMock(return_value=None)  # None → setup_builder bir setup üretmedi
+    # No-setup BuildResult → setup_builder bir setup üretmedi
+    mock_build = MagicMock(return_value=_make_build_result(
+        setup=None, reason=NoSetupReason.NO_POI,
+    ))
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", mock_analyze)
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", mock_build)
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics", mock_build)
 
     logger = MagicMock()
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger)
@@ -89,7 +93,8 @@ def test_runner_emits_validated_setup_when_pipeline_returns_one(monkeypatch):
     fake_setup = MagicMock(name="setup")
     fake_validated = MagicMock(name="validated")
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="picture"))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=fake_setup)))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
 
     logger = MagicMock()
@@ -109,7 +114,8 @@ def test_runner_htf_cache_reused_across_ticks_for_same_symbol(monkeypatch):
 
     mock_analyze = MagicMock(return_value="picture")
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", mock_analyze)
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=None)))
 
     logger = MagicMock()
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger)
@@ -133,7 +139,8 @@ def test_runner_htf_cache_isolated_across_symbols(monkeypatch):
 
     mock_analyze = MagicMock(return_value="picture")
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", mock_analyze)
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=None)))
 
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
     runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
@@ -163,7 +170,8 @@ def test_runner_multi_symbol_pipelines_independent(monkeypatch):
 
     mock_analyze = MagicMock(return_value="picture")
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", mock_analyze)
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=None)))
 
     logger = MagicMock()
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=logger)
@@ -180,7 +188,8 @@ def test_runner_no_execution_hook_when_order_manager_none(monkeypatch):
     fake_setup = MagicMock(name="setup")
     fake_validated = MagicMock(name="validated", spec=[])  # not a ValidatedSetup
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="picture"))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=fake_setup)))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
 
     logger_mock = MagicMock()
@@ -202,7 +211,8 @@ def test_runner_execution_hook_called_when_validated_setup(monkeypatch):
     fake_validated = MagicMock(spec=ValidatedSetup)
     fake_validated.setup = fake_setup_obj
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="pic"))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup_obj))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=fake_setup_obj)))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
 
     logger_mock = MagicMock()
@@ -225,7 +235,8 @@ def test_runner_execution_hook_skipped_for_rejection(monkeypatch):
     cfg = SMCConfig()
     fake_rej = MagicMock(spec=Rejection)
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value="pic"))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=MagicMock())))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_rej))
 
     logger_mock = MagicMock()
@@ -238,71 +249,41 @@ def test_runner_execution_hook_skipped_for_rejection(monkeypatch):
 
 
 # ============================================================
-# İş 2 (2026-05-19): NO_SETUP tanı log + per-symbol tick summary
-# Sessiz signal kıtlığını görünür hale getirir — orchestrator'un neden
-# üretmediği audit'lenir (bias_neutral / no_active_pois / low_conf).
+# İş 2 (2026-05-19) + refactor (2026-05-20): tick tanı log.
+# 2026-05-20: _diagnose_no_setup heuristic'i kaldırıldı; runner artık
+# setup_builder.build_with_diagnostics()'in SPESİFİK NoSetupReason'ını
+# ve diagnostics'ini doğrudan loglar.
 # ============================================================
 
 
-def test_diagnose_no_setup_bias_neutral():
-    """HTF bias NEUTRAL → 'bias_neutral' reason."""
-    from smc_engine.live.runner import _diagnose_no_setup
-    from smc_engine.types import Bias
-    picture = MagicMock()
-    picture.htf_bias = Bias.NEUTRAL
-    picture.active_pois = []
-    assert _diagnose_no_setup(picture) == "bias_neutral"
+def _make_build_result(setup=None, reason=None, diagnostics=None):
+    """BuildResult fabrikası — runner testleri için."""
+    from smc_engine.setup_builder import BuildResult
+    return BuildResult(
+        setup=setup, no_setup_reason=reason, diagnostics=diagnostics or {},
+    )
 
 
-def test_diagnose_no_setup_no_active_pois():
-    """Bias directional ama active_pois boş → 'no_active_pois'."""
-    from smc_engine.live.runner import _diagnose_no_setup
-    from smc_engine.types import Bias
-    picture = MagicMock()
-    picture.htf_bias = Bias.BULLISH
-    picture.active_pois = []
-    assert _diagnose_no_setup(picture) == "no_active_pois"
-
-
-def test_diagnose_no_setup_low_confluence_or_sl_geometry():
-    """Bias directional + POI var ama setup yok → fallback etiketi.
-
-    "invalid_sl" wording bug imajı verirdi; sl_min_atr_multiple aslında
-    configured behavior — "sl_geometry" daha doğru (M2 code review).
-    """
-    from smc_engine.live.runner import _diagnose_no_setup
-    from smc_engine.types import Bias
-    picture = MagicMock()
-    picture.htf_bias = Bias.BEARISH
-    picture.active_pois = [MagicMock(), MagicMock()]  # 2 POI
-    assert _diagnose_no_setup(picture) == "low_confluence_or_sl_geometry"
-
-
-def test_diagnose_no_setup_picture_none_returns_unknown():
-    """Picture None ise hasattr() False → 'unknown' (M1 code review defansive contract)."""
-    from smc_engine.live.runner import _diagnose_no_setup
-    assert _diagnose_no_setup(None) == "unknown"
-
-
-def test_runner_logs_tick_no_setup_with_reason_when_build_returns_none(monkeypatch, caplog):
-    """build()=None → INFO log 'tick ... kind=no_setup reason=...' tick'te bir kez.
-
-    I2 code review: tek-şema tick log; analyze_signals.py tek regex ile
-    validated_setup/rejection/no_setup üçünü de yakalar.
-    """
+def test_runner_logs_tick_no_setup_with_specific_reason(monkeypatch, caplog):
+    """build_with_diagnostics None döndürür → tick log spesifik reason +
+    diagnostics içerir. Eski heuristic 'low_confluence_or_sl_geometry'
+    yerine artık net 'sl_geometry_too_tight' gibi reason."""
     import logging
+    from smc_engine.setup_builder import NoSetupReason
     end_ts = datetime(2026, 5, 16, 14, 45)
     adapter = FakeAdapter(end_ts=end_ts)
     cfg = SMCConfig()
 
-    picture = MagicMock()
-    from smc_engine.types import Bias
-    picture.htf_bias = Bias.BULLISH
-    picture.active_pois = []
-    picture.current_price = 77500.0
-
-    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=picture))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=None))
+    br = _make_build_result(
+        setup=None,
+        reason=NoSetupReason.SL_GEOMETRY_TOO_TIGHT,
+        diagnostics={"sl_atr_ratio": 0.31, "sl_min_atr_multiple": 0.5,
+                     "confluence_score": 0.72},
+    )
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze",
+                        MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=br))
 
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
     with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
@@ -313,13 +294,67 @@ def test_runner_logs_tick_no_setup_with_reason_when_build_returns_none(monkeypat
         if "tick" in r.getMessage() and "kind=no_setup" in r.getMessage()
     ]
     assert len(tick_records) == 1, (
-        f"tick no_setup log eksik, got: {[r.getMessage() for r in caplog.records]}"
+        f"tick no_setup log eksik: {[r.getMessage() for r in caplog.records]}"
     )
     msg = tick_records[0].getMessage()
     assert "symbol=BTCUSDT" in msg
-    assert "reason=no_active_pois" in msg
-    assert "bias=BULLISH" in msg
-    assert "gate=none" in msg  # I1 sentinel
+    assert "reason=sl_geometry_too_tight" in msg
+    assert "gate=none" in msg  # I1 sentinel korundu
+    # diagnostics ölçülen değerleri içermeli
+    assert "sl_atr_ratio" in msg
+    assert "0.31" in msg
+
+
+def test_runner_logs_tick_no_setup_low_confluence_reason(monkeypatch, caplog):
+    """LOW_CONFLUENCE reason'ı + ölçülen skor log'a düşmeli."""
+    import logging
+    from smc_engine.setup_builder import NoSetupReason
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    br = _make_build_result(
+        setup=None,
+        reason=NoSetupReason.LOW_CONFLUENCE,
+        diagnostics={"confluence_score": 0.38, "confluence_threshold": 0.40},
+    )
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze",
+                        MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=br))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
+        runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    msg = next(r.getMessage() for r in caplog.records if "kind=no_setup" in r.getMessage())
+    assert "reason=low_confluence" in msg
+    assert "confluence_score" in msg
+    assert "0.38" in msg
+
+
+def test_runner_logs_tick_no_setup_reason_none_falls_back_to_unknown(monkeypatch, caplog):
+    """BuildResult.no_setup_reason None (yapı gereği olmamalı ama dataclass
+    default'u None) → runner defensive fallback 'reason=unknown' loglar
+    (Minor code review: defensive branch testi)."""
+    import logging
+    end_ts = datetime(2026, 5, 16, 14, 45)
+    adapter = FakeAdapter(end_ts=end_ts)
+    cfg = SMCConfig()
+
+    # setup=None ama reason=None — degenerate BuildResult
+    br = _make_build_result(setup=None, reason=None, diagnostics={})
+    monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze",
+                        MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=br))
+
+    runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
+    with caplog.at_level(logging.INFO, logger="smc_engine.live.runner"):
+        runner.run_once("BTCUSDT", now=end_ts + timedelta(seconds=5))
+
+    msg = next(r.getMessage() for r in caplog.records if "kind=no_setup" in r.getMessage())
+    assert "reason=unknown" in msg
 
 
 def test_runner_logs_tick_summary_when_validated_setup(monkeypatch, caplog):
@@ -333,7 +368,8 @@ def test_runner_logs_tick_summary_when_validated_setup(monkeypatch, caplog):
     fake_setup = MagicMock(name="setup")
     fake_validated = MagicMock(spec=VS, name="validated")
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=fake_setup)))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_validated))
 
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
@@ -360,7 +396,8 @@ def test_runner_logs_tick_summary_when_rejection(monkeypatch, caplog):
     fake_rejection = MagicMock(spec=Rejection, name="rejection")
     fake_rejection.gate = "funding"
     monkeypatch.setattr("smc_engine.live.runner.orchestrator_analyze", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("smc_engine.live.runner.build_setup", MagicMock(return_value=fake_setup))
+    monkeypatch.setattr("smc_engine.live.runner.build_with_diagnostics",
+                        MagicMock(return_value=_make_build_result(setup=fake_setup)))
     monkeypatch.setattr("smc_engine.live.runner.risk_guard_validate", MagicMock(return_value=fake_rejection))
 
     runner = LiveRunner(adapter=adapter, config=cfg, signal_logger=MagicMock())
