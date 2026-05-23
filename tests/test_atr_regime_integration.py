@@ -69,3 +69,76 @@ def test_orchestrator_writes_atr_history_to_h4_snapshot():
                 f"{tf_other} should not populate atr_history "
                 f"(H4-only optimization); got {snap_other.atr_history}"
             )
+
+
+def test_build_with_diagnostics_writes_atr_percentile_to_setup():
+    """build_with_diagnostics H4 atr_history'den percentile hesaplayip
+    Setup.regime_metrics'e yazmali."""
+    import pytest
+    from smc_engine.setup_builder import build_with_diagnostics
+    from smc_engine.types import (
+        Bias, Direction, MarketPicture, POIKind, POIRef, Range, TFSnapshot,
+        TimeFrame, Zone, ZoneAnchor, ZoneKind, ZoneStatus,
+    )
+
+    cfg = SMCConfig()
+    cfg.atr_percentile_window = 96
+    # atr_history: 1..100; window=96 -> recent=[5..100], current=80
+    # rank = count(v<=80)/96 = 76/96 ~= 0.792
+    history = [float(i) for i in range(1, 101)]
+    ts = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+    # HTF range: 0..200, ekvilibrium=100. Zone (DEMAND) bottom=20 top=60 ->
+    # mid=40 frac=0.20 derin discount; entry=top=60.
+    htf_range = Range(
+        high=200.0, low=0.0, equilibrium=100.0,
+        premium_zone=(100.0, 200.0), discount_zone=(0.0, 100.0),
+        timeframe=TimeFrame.H4, formed_at=ts,
+    )
+    demand_zone = Zone(
+        kind=ZoneKind.DEMAND,
+        top=60.0, bottom=20.0,
+        timeframe=TimeFrame.H4,
+        created_at=ts,
+        status=ZoneStatus.FRESH,
+        origin_candle_ts=ts,
+        anchor=ZoneAnchor.BODY,
+        age_bars=5,
+    )
+    h4 = TFSnapshot(
+        range_=htf_range,
+        bias=Bias.BULLISH,
+        zones=[demand_zone],
+        imbalances=[], levels=[], liquidity_events=[],
+        structure=[],
+        atr=80.0,
+        atr_history=history,
+    )
+    # POI direction-aligned (LONG -> DEMAND).
+    poi = POIRef(
+        kind=POIKind.ZONE,
+        ref=demand_zone,
+        htf_aligned=True,
+        score_hint=0.5,
+    )
+    picture = MarketPicture(
+        per_tf={TimeFrame.H4: h4},
+        htf_bias=Bias.BULLISH,
+        htf_range=htf_range,
+        active_pois=[poi],
+        at_timestamp=ts,
+        current_price=60.0,
+    )
+
+    result = build_with_diagnostics(picture, cfg)
+    assert result.setup is not None, (
+        f"setup uretilmesini bekliyorum; reason={result.no_setup_reason}, "
+        f"diag={result.diagnostics}"
+    )
+    rank = result.setup.regime_metrics.get("atr_percentile")
+    assert rank is not None, (
+        f"regime_metrics['atr_percentile'] yazilmali; got {result.setup.regime_metrics}"
+    )
+    assert rank == pytest.approx(0.792, rel=0.02), (
+        f"rank ~0.792 olmali (76/96); got {rank}"
+    )

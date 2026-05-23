@@ -642,6 +642,23 @@ def build_with_diagnostics(picture: MarketPicture, config) -> BuildResult:
     # --- 6. Confirmation baglama ---
     confirmation = _bind_confirmation(picture, direction)
 
+    # --- 6.1. Volatility regime metrics (Spec §13.2, 2026-05-23) ---
+    # h4_snap.atr_history dolu ise son N bar'dan ATR percentile rank hesapla
+    # ve Setup.regime_metrics'e yaz; risk_guard._check_volatility_regime
+    # buradan okur. Warm-up (history None/yetersiz) -> sessizce atla
+    # (dict bos kalir; gate atlanir).
+    regime_metrics: dict = {}
+    history = getattr(h4_snap, "atr_history", None) if h4_snap is not None else None
+    if history:
+        window = getattr(config, "atr_percentile_window", 96)
+        # En az window/2 numune yoksa rank yanli olur; warm-up say.
+        if len(history) >= window // 2:
+            recent = history[-window:]
+            current_atr = float(h4_snap.atr) if h4_snap is not None else 0.0
+            rank = sum(1 for v in recent if v <= current_atr) / len(recent)
+            regime_metrics["atr_percentile"] = rank
+            diagnostics["atr_percentile"] = rank
+
     setup = Setup(
         direction=direction,
         entry=entry,
@@ -655,5 +672,6 @@ def build_with_diagnostics(picture: MarketPicture, config) -> BuildResult:
         rr=rr,
         created_at=picture.at_timestamp,
         confluence_factor_count=factor_count,
+        regime_metrics=regime_metrics,
     )
     return BuildResult(setup=setup, no_setup_reason=None, diagnostics=diagnostics)
