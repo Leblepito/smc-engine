@@ -51,8 +51,21 @@ def test_orchestrator_writes_atr_history_to_h4_snapshot():
     assert snap_h4.atr_history is not None, (
         "H4 snapshot'ta atr_history doldurulmali (orchestrator gorevidir)"
     )
-    assert len(snap_h4.atr_history) >= cfg.atr_percentile_window // 2, (
-        f"En az window/2 bar olmali; got {len(snap_h4.atr_history)}"
+    # Tight length: H4 frame has 200 bars, ATR series after dropna ~ 200 valid,
+    # so history length must be exactly min(window, expected_max) = min(96, 200) = 96
+    expected_max = len(h4)  # 200 valid ATR values after rolling
+    assert len(snap_h4.atr_history) == min(cfg.atr_percentile_window, expected_max), (
+        f"atr_history length must equal min(window, expected_max)="
+        f"{min(cfg.atr_percentile_window, expected_max)}; got {len(snap_h4.atr_history)}"
     )
     # son eleman snap.atr ile ayni olmali (tutarlilik)
     assert abs(snap_h4.atr_history[-1] - snap_h4.atr) < 1e-9
+
+    # Non-H4 TFs must leave atr_history as None (memory-saving gate)
+    for tf_other in (TimeFrame.D1, TimeFrame.M15):
+        snap_other = picture.per_tf.get(tf_other)
+        if snap_other is not None:
+            assert snap_other.atr_history is None, (
+                f"{tf_other} should not populate atr_history "
+                f"(H4-only optimization); got {snap_other.atr_history}"
+            )
