@@ -142,3 +142,98 @@ def test_build_with_diagnostics_writes_atr_percentile_to_setup():
     assert rank == pytest.approx(0.792, rel=0.02), (
         f"rank ~0.792 olmali (76/96); got {rank}"
     )
+
+
+def test_high_vol_regime_e2e_rejection():
+    """orchestrator -> setup_builder -> risk_guard zinciri yuksek-vol H4
+    verisiyle volatility_regime gate'i tetiklemeli (Spec §13.2 wiring)."""
+    import pytest
+    from smc_engine.risk_guard import validate
+    from smc_engine.setup_builder import build_with_diagnostics
+    from smc_engine.types import AccountState, Rejection
+
+    # 100 H4 bar; ilk 80'i dusuk vol (sigma=0.5), son 20'si yuksek vol (sigma=5)
+    np.random.seed(7)
+    rng = pd.date_range(
+        start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        periods=100, freq="4h",
+    )
+    closes = np.concatenate([
+        100 + np.cumsum(np.random.normal(0, 0.5, 80)),
+        100 + np.cumsum(np.random.normal(0, 5.0, 20)) + 80 * 0.0,
+    ])
+    high_vol_h4 = pd.DataFrame({
+        "open": closes + np.random.normal(0, 0.2, 100),
+        "high": closes + np.abs(np.random.normal(0, 2.0, 100)),
+        "low": closes - np.abs(np.random.normal(0, 2.0, 100)),
+        "close": closes,
+        "volume": np.random.uniform(100, 1000, 100),
+    }, index=rng)
+    high_vol_h4["high"] = high_vol_h4[["high", "open", "close"]].max(axis=1)
+    high_vol_h4["low"] = high_vol_h4[["low", "open", "close"]].min(axis=1)
+
+    d1 = high_vol_h4.resample("1D").agg({
+        "open": "first", "high": "max", "low": "min",
+        "close": "last", "volume": "sum"
+    }).dropna()
+    # M15'i H4'ten upsample + time-interpolate ile turet.
+    # 1) current_price M15'in son barindan okunuyor (orchestrator
+    #    _smallest_tf) — H4 fiyat rejimiyle uyumlu olmali (yoksa SL
+    #    geometrisi cokuyor).
+    # 2) Saf ffill duz tabaka uretip M15 yapisini sifirliyor -> deviation
+    #    gate'i tetikleniyor. Time-interpolate ile barlar arasi tedrici
+    #    hareket M15 BOS/CHoCH ureterek confirmation gate'ini gecirir.
+    m15_rng = pd.date_range(
+        start=high_vol_h4.index[0],
+        end=high_vol_h4.index[-1],
+        freq="15min",
+    )
+    m15_closes = high_vol_h4["close"].reindex(m15_rng).interpolate(
+        method="time"
+    )
+    m15 = pd.DataFrame({
+        "open": m15_closes.shift(1).fillna(m15_closes),
+        "high": m15_closes * 1.002,
+        "low": m15_closes * 0.998,
+        "close": m15_closes,
+        "volume": 100.0,
+    }, index=m15_rng)
+    m15["high"] = m15[["high", "open", "close"]].max(axis=1)
+    m15["low"] = m15[["low", "open", "close"]].min(axis=1)
+
+    cfg = SMCConfig()
+    cfg.atr_percentile_window = 50  # smaller window for short synthetic
+    cfg.atr_percentile_threshold = 0.50  # son bar yuksek-vol -> rank yuksek
+
+    data = {
+        TimeFrame.D1: d1, TimeFrame.H4: high_vol_h4,
+        TimeFrame.M15: m15,
+    }
+    picture = analyze(data, cfg,
+                      at_bar=high_vol_h4.index[-1].to_pydatetime())
+
+    result = build_with_diagnostics(picture, cfg)
+    if result.setup is None:
+        pytest.skip(
+            f"sentetik veride setup uretilmedi: {result.no_setup_reason}; "
+            f"diag={result.diagnostics}"
+        )
+
+    # regime_metrics dolu olmali ve rank esigi asmali (son bar high vol)
+    rank = result.setup.regime_metrics.get("atr_percentile")
+    assert rank is not None, "Setup regime_metrics atr_percentile içermeli"
+    assert rank > cfg.atr_percentile_threshold, (
+        f"yuksek-vol son bar rank={rank} > {cfg.atr_percentile_threshold} olmali"
+    )
+
+    verdict = validate(result.setup, AccountState(
+        equity=10_000.0, open_position=False,
+        consecutive_losses=0, max_drawdown_pct=0.0,
+    ), cfg)
+    assert isinstance(verdict, Rejection), (
+        f"vol gate reject etmeli; aldigim: {verdict}"
+    )
+    assert verdict.gate == "volatility_regime", (
+        f"gate=volatility_regime olmali; aldigim: {verdict.gate}, "
+        f"reason={verdict.reason}"
+    )
