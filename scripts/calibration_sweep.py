@@ -335,6 +335,14 @@ class _RealBacktestFn:
         cfg = SMCConfig()
         cfg.sl_min_atr_multiple = params["sl_min_atr_multiple"]
         cfg.sl_band_buffer_mult = params["sl_band_buffer_mult"]
+        # Kalibrasyon ham strateji performansini olcer — production'in
+        # drawdown_breaker'i (max_consecutive_losses=5 + max_drawdown_pct=0.10)
+        # olcumu yutmamali. 2026-05-22 P3 turunda ilk 63 barda 5 ardisik
+        # kayipla devre kesici kilitlendi, geri kalan 7937 bar olculmedi.
+        # Production gate'leri burada acikca devre disi (kalibrasyon raporu
+        # = strateji matematigi, risk_guard kisitlari altinda degil).
+        cfg.max_consecutive_losses = 10**9
+        cfg.max_drawdown_pct = 1.0
         result = harness_run(
             self._ohlcv, cfg, initial_equity=10_000.0,
             m15_lookback=self.m15_lookback,
@@ -381,6 +389,11 @@ def _make_real_walk_forward_fn(
         cfg = SMCConfig()
         cfg.sl_min_atr_multiple = params["sl_min_atr_multiple"]
         cfg.sl_band_buffer_mult = params["sl_band_buffer_mult"]
+        # Sweep'le ayni gerekce: drawdown_breaker WF olcumunu de yutar
+        # (her train/test fold'unda 5 ardisik kayipla kilit). Strateji-saf
+        # WF metrigi icin production gate'leri devre disi.
+        cfg.max_consecutive_losses = 10**9
+        cfg.max_drawdown_pct = 1.0
         ohlcv = {
             TimeFrame.D1: d1, TimeFrame.H4: h4,
             TimeFrame.H8: h8, TimeFrame.M15: m15_slice,

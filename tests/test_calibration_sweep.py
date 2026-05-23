@@ -691,3 +691,101 @@ def test_backtest_fn_picklable():
     assert callable(restored)
     assert restored.m15_offset == 0
     assert restored.m15_window == 250
+
+
+# ============================================================
+# Calibration drawdown_breaker bypass — 2026-05-23 root cause
+# ============================================================
+# P3 2026-05-22 turunda 8000-bar penceresinin ilk 63 barinda 5 ardisik
+# kayipla risk_guard'in drawdown_breaker'i tetiklendi. Geri kalan 7937 bar
+# (≈82 gun) olculmedi — CP3 BASARISIZ karari STRATEJI performansini degil
+# breaker kilidini olcmus oldu. Kalibrasyon harness'i ham strateji
+# performansini olcmek icin production breaker'i bypass etmeli.
+
+
+def test_calibration_backtest_bypasses_consecutive_loss_breaker(monkeypatch):
+    """_RealBacktestFn cfg.max_consecutive_losses'i ham strateji olcumu icin
+    pratik olarak etkisiz hale getirmeli (production default 5 dead-lock yarattı).
+
+    Why: P3 2026-05-22 turunda 8000-bar penceresinin ilk 63 barinda 5
+    ardisik kayipla devre kesici tetiklendi; geri kalan 7937 bar
+    olculmedi. Kalibrasyon raporu strateji-saf metrik vermeliydi.
+    """
+    mod = _load_sweep_module()
+
+    captured: dict = {}
+
+    def fake_harness_run(ohlcv, cfg, **kw):
+        captured["max_consecutive_losses"] = cfg.max_consecutive_losses
+        captured["max_drawdown_pct"] = cfg.max_drawdown_pct
+
+        class _FakeResult:
+            metrics = {
+                "trade_count": 0, "win_rate": 0.0, "expectancy": 0.0,
+                "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0,
+            }
+
+        return _FakeResult()
+
+    # _RealBacktestFn icindeki "from backtest.harness import run as harness_run"
+    # import call time'da olur — backtest.harness.run yamasini gorur.
+    import backtest.harness as harness_module
+    monkeypatch.setattr(harness_module, "run", fake_harness_run)
+
+    fn = mod._RealBacktestFn(m15_window=10, m15_offset=0, m15_lookback=5)
+    # Parquet yuklemeyi atla — fake OHLCV
+    fn._ohlcv = {"M15": "dummy"}
+
+    fn({"sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25})
+
+    # Production default 5 dead-lock yaratir; kalibrasyon yuksek esik kullanmali.
+    assert captured["max_consecutive_losses"] > 100, (
+        f"calibration cfg.max_consecutive_losses="
+        f"{captured['max_consecutive_losses']}, "
+        "production default 5 dead-lock yaratiyor; > 100 olmali"
+    )
+    # max_drawdown_pct production 0.10 — kalibrasyonu yutar; 1.0 (%100) etkisiz.
+    assert captured["max_drawdown_pct"] >= 1.0, (
+        f"calibration cfg.max_drawdown_pct={captured['max_drawdown_pct']}, "
+        "production default 0.10 kalibrasyonu yutuyor; >= 1.0 olmali"
+    )
+
+
+def test_calibration_walk_forward_bypasses_consecutive_loss_breaker(monkeypatch):
+    """_make_real_walk_forward_fn de breaker'i bypass etmeli — ayni gerekce.
+
+    Walk-forward train/test pencereleri ham strateji performansini
+    karsilastirmali; breaker hem train hem test'i kilitleyebilir.
+    """
+    mod = _load_sweep_module()
+
+    captured: dict = {}
+
+    def fake_walk_forward(ohlcv, cfg, **kw):
+        captured["max_consecutive_losses"] = cfg.max_consecutive_losses
+        captured["max_drawdown_pct"] = cfg.max_drawdown_pct
+        return []  # bos pencere listesi yeterli — gate'i tetiklemez
+
+    import backtest.walk_forward as wf_module
+    monkeypatch.setattr(wf_module, "walk_forward", fake_walk_forward)
+
+    # Parquet'lerin var oldugu varsayilir; test sadece cfg override'i kontrol eder.
+    # Eger parquet yoksa _make_real_walk_forward_fn FileNotFoundError verir.
+    btc_dir = (Path(__file__).resolve().parent.parent / "data" / "btc")
+    if not (btc_dir / "BTCUSDT_M15.parquet").exists():
+        pytest.skip("data/btc/BTCUSDT_M15.parquet yok — examples/run_btc.py ile uret")
+
+    run_wf = mod._make_real_walk_forward_fn(
+        m15_window=10, m15_offset=0, m15_lookback=5,
+        train_bars=4, test_bars=2, step_bars=2,
+    )
+    run_wf({"sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25})
+
+    assert captured["max_consecutive_losses"] > 100, (
+        f"calibration WF cfg.max_consecutive_losses="
+        f"{captured['max_consecutive_losses']}, > 100 olmali"
+    )
+    assert captured["max_drawdown_pct"] >= 1.0, (
+        f"calibration WF cfg.max_drawdown_pct="
+        f"{captured['max_drawdown_pct']}, >= 1.0 olmali"
+    )
