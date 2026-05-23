@@ -278,6 +278,12 @@ class TFSnapshot:
     # orchestrator her snapshot insa ederken doldurur; default 0.0 ki
     # mevcut yapim yerleri (testler vb.) kirilmasin.
     atr: float = 0.0
+    # --- volatility regime filter (Spec §13.2, 2026-05-23) ---
+    # Son N H4 bar'in ATR degerleri (rolling history). orchestrator H4
+    # snapshot insa ederken doldurur. None = warm-up veya eski test
+    # fixture (geriye uyumluluk). setup_builder bu listeden ATR percentile
+    # rank hesaplar.
+    atr_history: Optional[list[float]] = None
 
 
 @dataclass
