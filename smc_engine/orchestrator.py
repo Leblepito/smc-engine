@@ -44,6 +44,7 @@ from smc_engine.detectors import (
     detect_zones,
 )
 from smc_engine.detectors._atr import atr as _atr
+from smc_engine.detectors._atr import atr_series as _atr_series
 from smc_engine.types import (
     Bias,
     Direction,
@@ -198,7 +199,20 @@ def _run_all_detectors(
     bias = _bias_from_snapshot(df, structure, rng)
     # ATR: bu TF'in (zaten at_bar'a kadar dilimlenmis) OHLCV'sinden.
     atr_period = getattr(config, "atr_period", 14)
-    atr_val = _atr(df, atr_period) if len(df) >= 2 else 0.0
+    # Rolling ATR series — son N bar'i atr_history'ye yaz; son deger = atr.
+    if len(df) >= 2:
+        series = _atr_series(df, atr_period).dropna()
+        atr_val = float(series.iloc[-1]) if len(series) > 0 else 0.0
+        # atr_history yalnizca H4 icin anlamli (vol regime filter H4-tabanli).
+        # Diger TF'lerde None birak — gereksiz hesap + memory yok.
+        if tf == TimeFrame.H4:
+            window = getattr(config, "atr_percentile_window", 96)
+            atr_history = series.tail(window).tolist()
+        else:
+            atr_history = None
+    else:
+        atr_val = 0.0
+        atr_history = None
     return TFSnapshot(
         range_=rng,
         bias=bias,
@@ -208,6 +222,7 @@ def _run_all_detectors(
         liquidity_events=liquidity,
         structure=structure,
         atr=atr_val,
+        atr_history=atr_history,
     )
 
 
@@ -575,6 +590,7 @@ def analyze(
             liquidity_events=snap.liquidity_events,
             structure=snap.structure,
             atr=snap.atr,
+            atr_history=snap.atr_history,
         )
         per_tf[tf] = snap
         htf_bias = snap.bias
@@ -617,6 +633,7 @@ def analyze(
             liquidity_events=snap.liquidity_events,
             structure=snap.structure,
             atr=snap.atr,
+            atr_history=snap.atr_history,
         )
         per_tf[tf] = snap
         # HTF bias'a gore filtrele -> POI havuzu.
