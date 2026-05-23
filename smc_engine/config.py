@@ -100,6 +100,10 @@ class SMCConfig:
     max_drawdown_pct: float = 0.10
     sl_min_atr_multiple: float = 0.5
     funding_buffer_minutes: int = 30
+    # --- volatility regime filter (Spec §13.2, 2026-05-23) ---
+    atr_percentile_window: int = 96            # H4 bar (~16 gun lookback)
+    atr_percentile_threshold: float = 0.80     # > p80 ise veto
+    atr_regime_filter_enabled: bool = True     # production default ACIK
     # risk_guard confluence gate: en az kac sifir-olmayan confluence faktoru
     # gerekli (Setup.confluence_factor_count >= bu deger).
     min_confluence_factors: int = 2
