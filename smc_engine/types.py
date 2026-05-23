@@ -233,6 +233,11 @@ class Setup:
     # risk_guard confluence gate'i bu sayiyi config.min_confluence_factors ile
     # karsilastirir. Default'lu (sona) eklendi -> mevcut Setup yapimlari kirilmaz.
     confluence_factor_count: int = 0
+    # --- volatility regime filter (Spec §13.2, 2026-05-23) ---
+    # setup_builder olusturma sirasinda hesapladigi rejim olcumleri.
+    # Su an: {"atr_percentile": float}. risk_guard._check_volatility_regime
+    # bu sozlukten okur. Default factory mutable footgun'unu engeller.
+    regime_metrics: dict = field(default_factory=dict)
 
 
 @dataclass
