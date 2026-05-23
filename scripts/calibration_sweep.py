@@ -335,6 +335,11 @@ class _RealBacktestFn:
         cfg = SMCConfig()
         cfg.sl_min_atr_multiple = params["sl_min_atr_multiple"]
         cfg.sl_band_buffer_mult = params["sl_band_buffer_mult"]
+        # ATR regime filter overrides (Spec §13.2, 2026-05-23) — opsiyonel
+        if "atr_percentile_threshold" in params:
+            cfg.atr_percentile_threshold = params["atr_percentile_threshold"]
+        if "atr_regime_filter_enabled" in params:
+            cfg.atr_regime_filter_enabled = params["atr_regime_filter_enabled"]
         # Kalibrasyon ham strateji performansini olcer — production'in
         # drawdown_breaker'i (max_consecutive_losses=5 + max_drawdown_pct=0.10)
         # olcumu yutmamali. 2026-05-22 P3 turunda ilk 63 barda 5 ardisik
@@ -389,6 +394,11 @@ def _make_real_walk_forward_fn(
         cfg = SMCConfig()
         cfg.sl_min_atr_multiple = params["sl_min_atr_multiple"]
         cfg.sl_band_buffer_mult = params["sl_band_buffer_mult"]
+        # ATR regime filter overrides (Spec §13.2, 2026-05-23) — opsiyonel
+        if "atr_percentile_threshold" in params:
+            cfg.atr_percentile_threshold = params["atr_percentile_threshold"]
+        if "atr_regime_filter_enabled" in params:
+            cfg.atr_regime_filter_enabled = params["atr_regime_filter_enabled"]
         # Sweep'le ayni gerekce: drawdown_breaker WF olcumunu de yutar
         # (her train/test fold'unda 5 ardisik kayipla kilit). Strateji-saf
         # WF metrigi icin production gate'leri devre disi.
@@ -446,6 +456,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "the sl_min_atr=0.5 sweep row).")
     p.add_argument("--baseline-max-dd", type=float, default=None,
                    help="Ratchet baseline max_drawdown_pct.")
+    # Volatility regime filter (Spec §13.2, 2026-05-23)
+    p.add_argument("--atr-percentile-threshold", default=None,
+                   help="ATR percentile veto threshold (sweep grid, "
+                        "comma-separated). Verilmezse SMCConfig default "
+                        "(0.80) tek kombo kullanilir.")
+    p.add_argument("--atr-regime-disabled", action="store_true",
+                   help="Volatility regime gate'i KAPALI olarak calistir "
+                        "(baseline karsilastirmasi icin).")
     p.add_argument("--baseline-trade-count", type=int, default=None,
                    help="Ratchet baseline trade_count.")
     return p
@@ -455,10 +473,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = _build_arg_parser()
     args = p.parse_args(argv)
 
+    atr_thresholds = (
+        _parse_float_list(args.atr_percentile_threshold)
+        if args.atr_percentile_threshold else [None]
+    )
+    enabled_flag = not args.atr_regime_disabled
+
     grid = build_param_grid(
         sl_min_atr_multiple=_parse_float_list(args.sl_min_atr),
         sl_band_buffer_mult=_parse_float_list(args.sl_band_buffer),
     )
+    # ATR threshold sweep 3'uncu eksen — opsiyonel.
+    # NOT: enabled_flag her zaman CSV'ye yazilir (observability — kullanici
+    # her satirin filter durumunu gorebilsin).
+    new_grid = []
+    for combo in grid:
+        for thr in atr_thresholds:
+            cell = dict(combo)
+            if thr is not None:
+                cell["atr_percentile_threshold"] = thr
+            cell["atr_regime_filter_enabled"] = enabled_flag
+            new_grid.append(cell)
+    grid = new_grid
     print(f"[calibration_sweep] grid: {len(grid)} combinations")
 
     # Parquet varlığını sweep ÖNCESİ doğrula — eksikse exit 2 (data hatası,

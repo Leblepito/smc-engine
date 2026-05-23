@@ -789,3 +789,59 @@ def test_calibration_walk_forward_bypasses_consecutive_loss_breaker(monkeypatch)
         f"calibration WF cfg.max_drawdown_pct="
         f"{captured['max_drawdown_pct']}, >= 1.0 olmali"
     )
+
+
+# ============================================================
+# ATR volatility-regime filter override — 2026-05-23 ekleme
+# ============================================================
+
+
+def test_calibration_backtest_accepts_atr_threshold_param(monkeypatch):
+    """_RealBacktestFn params['atr_percentile_threshold'] verildiginde cfg'ye yansir."""
+    mod = _load_sweep_module()
+    captured: dict = {}
+
+    def fake_harness_run(ohlcv, cfg, **kw):
+        captured["atr_threshold"] = cfg.atr_percentile_threshold
+        captured["atr_enabled"] = cfg.atr_regime_filter_enabled
+
+        class _R:
+            metrics = {"trade_count": 0, "win_rate": 0.0, "expectancy": 0.0,
+                       "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0}
+        return _R()
+
+    import backtest.harness as harness_module
+    monkeypatch.setattr(harness_module, "run", fake_harness_run)
+
+    fn = mod._RealBacktestFn(m15_window=10, m15_offset=0, m15_lookback=5)
+    fn._ohlcv = {"M15": "dummy"}
+    fn({
+        "sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25,
+        "atr_percentile_threshold": 0.70,
+    })
+    assert captured["atr_threshold"] == 0.70
+
+
+def test_calibration_backtest_atr_regime_disabled_flag(monkeypatch):
+    """_RealBacktestFn params['atr_regime_filter_enabled']=False cfg'ye yansir."""
+    mod = _load_sweep_module()
+    captured: dict = {}
+
+    def fake_harness_run(ohlcv, cfg, **kw):
+        captured["atr_enabled"] = cfg.atr_regime_filter_enabled
+
+        class _R:
+            metrics = {"trade_count": 0, "win_rate": 0.0, "expectancy": 0.0,
+                       "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0}
+        return _R()
+
+    import backtest.harness as harness_module
+    monkeypatch.setattr(harness_module, "run", fake_harness_run)
+
+    fn = mod._RealBacktestFn(m15_window=10, m15_offset=0, m15_lookback=5)
+    fn._ohlcv = {"M15": "dummy"}
+    fn({
+        "sl_min_atr_multiple": 0.5, "sl_band_buffer_mult": 0.25,
+        "atr_regime_filter_enabled": False,
+    })
+    assert captured["atr_enabled"] is False
