@@ -59,6 +59,7 @@ GATE_ORDER: tuple[str, ...] = (
     "drawdown_breaker",
     "session",
     "funding",
+    "volatility_regime",
 )
 
 
@@ -180,6 +181,31 @@ def _check_funding(setup: Setup, config) -> str | None:
     return None
 
 
+def _check_volatility_regime(setup: Setup, config) -> str | None:
+    """Yuksek-vol rejim veto'su (Spec §13.2, 2026-05-23).
+
+    setup.regime_metrics['atr_percentile'] mevcut H4 ATR'nin son
+    config.atr_percentile_window bar'daki rolling percentile rank'i.
+    Esigi asarsa SMC mekanikleri sistematik basarisiz oluyor (2026-05-23
+    P3 baseline 18/18 kombo kayip — bkz docs spec).
+
+    Disabled veya regime_metrics yoksa None doner (warm-up safe default).
+    """
+    if not getattr(config, "atr_regime_filter_enabled", True):
+        return None
+    metrics = getattr(setup, "regime_metrics", {}) or {}
+    rank = metrics.get("atr_percentile")
+    if rank is None:
+        return None  # warm-up / eski snapshot
+    threshold = getattr(config, "atr_percentile_threshold", 0.80)
+    if rank > threshold:
+        return (
+            f"volatility regime: ATR percentile={rank:.2f} > "
+            f"{threshold} — yuksek-vol chop, no trade"
+        )
+    return None
+
+
 # ============================================================
 # Ana giris noktasi
 # ============================================================
@@ -221,6 +247,10 @@ def validate(
     elif asset_class == "crypto":
         checks.append(("funding", _check_funding(setup, config)))
     # diger asset_class -> zaman gate'i yok (guvenli varsayilan).
+
+    # Volatility regime — en son gate (cheap, deterministik;
+    # diger gate'lerin reason'unu maskelemesin)
+    checks.append(("volatility_regime", _check_volatility_regime(setup, config)))
 
     for gate, reason in checks:
         if reason is not None:
