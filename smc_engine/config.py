@@ -104,6 +104,9 @@ class SMCConfig:
     atr_percentile_window: int = 96            # H4 bar (~16 gun lookback)
     atr_percentile_threshold: float = 0.80     # > p80 ise veto
     atr_regime_filter_enabled: bool = True     # production default ACIK
+    # --- bias detection trend override (Spec 2026-05-24) ---
+    bias_use_d1_ema_trend: bool = True            # production default ACIK
+    bias_d1_ema_period: int = 50                  # D1 EMA periyodu
     # risk_guard confluence gate: en az kac sifir-olmayan confluence faktoru
     # gerekli (Setup.confluence_factor_count >= bu deger).
     min_confluence_factors: int = 2
