@@ -508,8 +508,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             if thr is not None:
                 cell["atr_percentile_threshold"] = thr
             cell["atr_regime_filter_enabled"] = enabled_flag
-            if args.bias_d1_ema_disabled:
-                cell["bias_use_d1_ema_trend"] = False
+            # Bias overrides — bias_use_d1_ema_trend HER ZAMAN yazilir
+            # (ATR ile aynı observability disiplini); period sadece
+            # override edildiginde (default 50 row'a yazilmaz).
+            cell["bias_use_d1_ema_trend"] = not args.bias_d1_ema_disabled
             if args.bias_d1_ema_period is not None:
                 cell["bias_d1_ema_period"] = args.bias_d1_ema_period
             new_grid.append(cell)
