@@ -196,7 +196,7 @@ def _run_all_detectors(
     liquidity = detect_liquidity(df, cfg, known_levels=kl or None)
 
     rng = rng_list[0] if rng_list else None
-    bias = _bias_from_snapshot(df, structure, rng)
+    bias = _bias_from_snapshot(df, structure, rng, tf, config)
     # ATR: bu TF'in (zaten at_bar'a kadar dilimlenmis) OHLCV'sinden.
     atr_period = getattr(config, "atr_period", 14)
     # Rolling ATR series — son N bar'i atr_history'ye yaz; son deger = atr.
@@ -245,14 +245,34 @@ def _bias_from_snapshot(
     df: pd.DataFrame,
     structure: list[StructureBreak],
     rng: Optional[Range],
+    tf: Optional[TimeFrame] = None,
+    config=None,
 ) -> Bias:
     """Bir TF icin bias turet.
 
     Oncelik:
-      1. Son ``StructureBreak`` yonu — LONG -> BULLISH, SHORT -> BEARISH.
-      2. Structure yoksa: kapanis trendi fallback — son kapanis ilk kapanistan
-         belirgin yuksekse BULLISH, dusukse BEARISH, aksi halde NEUTRAL.
+      1. D1 EMA trend override (tf=D1 + config etkin + yeterli veri):
+         close >= ema -> BULLISH, close < ema -> BEARISH.
+      2. Yapi-bazli bias (eski fallback): son StructureBreak yonu.
+      3. Close-trend fallback (sentetik veri icin, az bar): +-0.5% esik.
+      4. NEUTRAL (default — empty df / structure + flat close dahil).
+
+    EMA: pandas Series.ewm(span=N, adjust=False), alpha=2/(N+1),
+    seed=first close. Period basina en az 3xN bar olunca seed etkisi <%1.
     """
+    use_ema = getattr(config, "bias_use_d1_ema_trend", True) if config else True
+    ema_period = getattr(config, "bias_d1_ema_period", 50) if config else 50
+
+    # TF gating: EMA override sadece D1'de aktif.
+    if use_ema and tf == TimeFrame.D1 and len(df) >= ema_period:
+        closes = df["close"]
+        ema = float(closes.ewm(span=ema_period, adjust=False).mean().iloc[-1])
+        last_close = float(closes.iloc[-1])
+        if last_close < ema:
+            return Bias.BEARISH
+        return Bias.BULLISH  # equality -> BULLISH
+
+    # --- Fallback 1: yapi-bazli bias (eski) ---
     if structure:
         last = structure[-1]
         return (
@@ -260,10 +280,11 @@ def _bias_from_snapshot(
             if last.direction == Direction.LONG
             else Bias.BEARISH
         )
-    # Fallback: kapanis trendi (monoton sentetik setler / az veri icin).
+
+    # --- Fallback 2: close-trend (sentetik / az veri) ---
     if len(df) >= 2:
-        closes = df["close"].to_numpy()
-        first, last_c = float(closes[0]), float(closes[-1])
+        closes_arr = df["close"].to_numpy()
+        first, last_c = float(closes_arr[0]), float(closes_arr[-1])
         if first != 0:
             change = (last_c - first) / abs(first)
             if change > 0.005:
