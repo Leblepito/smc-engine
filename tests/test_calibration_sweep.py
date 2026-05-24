@@ -845,3 +845,59 @@ def test_calibration_backtest_atr_regime_disabled_flag(monkeypatch):
         "atr_regime_filter_enabled": False,
     })
     assert captured["atr_enabled"] is False
+
+
+# D1 EMA bias override — 2026-05-24 ekleme
+# ============================================================
+
+
+def test_real_backtest_fn_applies_bias_use_d1_ema_trend_override(monkeypatch):
+    """params['bias_use_d1_ema_trend']=False cfg üzerine geçer (override)."""
+    mod = _load_sweep_module()
+    captured: dict = {}
+
+    def fake_harness_run(ohlcv, cfg, **kw):
+        captured["bias_use_d1_ema_trend"] = cfg.bias_use_d1_ema_trend
+
+        class _R:
+            metrics = {"trade_count": 0, "win_rate": 0.0, "expectancy": 0.0,
+                       "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0}
+        return _R()
+
+    import backtest.harness as harness_module
+    monkeypatch.setattr(harness_module, "run", fake_harness_run)
+
+    fn = mod._RealBacktestFn(m15_window=1000, m15_offset=0, m15_lookback=140)
+    fn._ohlcv = {"M15": "dummy"}
+    fn({
+        "sl_min_atr_multiple": 0.4,
+        "sl_band_buffer_mult": 0.25,
+        "bias_use_d1_ema_trend": False,
+    })
+    assert captured["bias_use_d1_ema_trend"] is False
+
+
+def test_real_backtest_fn_applies_bias_d1_ema_period_override(monkeypatch):
+    """params['bias_d1_ema_period']=100 cfg üzerine geçer."""
+    mod = _load_sweep_module()
+    captured: dict = {}
+
+    def fake_harness_run(ohlcv, cfg, **kw):
+        captured["bias_d1_ema_period"] = cfg.bias_d1_ema_period
+
+        class _R:
+            metrics = {"trade_count": 0, "win_rate": 0.0, "expectancy": 0.0,
+                       "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0}
+        return _R()
+
+    import backtest.harness as harness_module
+    monkeypatch.setattr(harness_module, "run", fake_harness_run)
+
+    fn = mod._RealBacktestFn(m15_window=1000, m15_offset=0, m15_lookback=140)
+    fn._ohlcv = {"M15": "dummy"}
+    fn({
+        "sl_min_atr_multiple": 0.4,
+        "sl_band_buffer_mult": 0.25,
+        "bias_d1_ema_period": 100,
+    })
+    assert captured["bias_d1_ema_period"] == 100

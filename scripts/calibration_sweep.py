@@ -340,6 +340,11 @@ class _RealBacktestFn:
             cfg.atr_percentile_threshold = params["atr_percentile_threshold"]
         if "atr_regime_filter_enabled" in params:
             cfg.atr_regime_filter_enabled = params["atr_regime_filter_enabled"]
+        # D1 EMA bias overrides (Spec §13.x, 2026-05-24) — opsiyonel
+        if "bias_use_d1_ema_trend" in params:
+            cfg.bias_use_d1_ema_trend = params["bias_use_d1_ema_trend"]
+        if "bias_d1_ema_period" in params:
+            cfg.bias_d1_ema_period = params["bias_d1_ema_period"]
         # Kalibrasyon ham strateji performansini olcer — production'in
         # drawdown_breaker'i (max_consecutive_losses=5 + max_drawdown_pct=0.10)
         # olcumu yutmamali. 2026-05-22 P3 turunda ilk 63 barda 5 ardisik
@@ -399,6 +404,11 @@ def _make_real_walk_forward_fn(
             cfg.atr_percentile_threshold = params["atr_percentile_threshold"]
         if "atr_regime_filter_enabled" in params:
             cfg.atr_regime_filter_enabled = params["atr_regime_filter_enabled"]
+        # D1 EMA bias overrides (Spec §13.x, 2026-05-24) — opsiyonel
+        if "bias_use_d1_ema_trend" in params:
+            cfg.bias_use_d1_ema_trend = params["bias_use_d1_ema_trend"]
+        if "bias_d1_ema_period" in params:
+            cfg.bias_d1_ema_period = params["bias_d1_ema_period"]
         # Sweep'le ayni gerekce: drawdown_breaker WF olcumunu de yutar
         # (her train/test fold'unda 5 ardisik kayipla kilit). Strateji-saf
         # WF metrigi icin production gate'leri devre disi.
@@ -464,6 +474,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--atr-regime-disabled", action="store_true",
                    help="Volatility regime gate'i KAPALI olarak calistir "
                         "(baseline karsilastirmasi icin).")
+    p.add_argument("--bias-d1-ema-disabled", action="store_true",
+                   help="bias_use_d1_ema_trend=False override "
+                        "(regresyon hata ayiklama icin).")
+    p.add_argument("--bias-d1-ema-period", type=int, default=None,
+                   help="bias_d1_ema_period override.")
     p.add_argument("--baseline-trade-count", type=int, default=None,
                    help="Ratchet baseline trade_count.")
     return p
@@ -493,6 +508,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             if thr is not None:
                 cell["atr_percentile_threshold"] = thr
             cell["atr_regime_filter_enabled"] = enabled_flag
+            if args.bias_d1_ema_disabled:
+                cell["bias_use_d1_ema_trend"] = False
+            if args.bias_d1_ema_period is not None:
+                cell["bias_d1_ema_period"] = args.bias_d1_ema_period
             new_grid.append(cell)
     grid = new_grid
     print(f"[calibration_sweep] grid: {len(grid)} combinations")
