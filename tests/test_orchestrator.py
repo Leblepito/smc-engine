@@ -542,3 +542,59 @@ def test_no_lookahead_preserved_with_tf_lookback(fixture_multi_tf):
         assert sa.levels == sb.levels
         assert sa.liquidity_events == sb.liquidity_events
         assert sa.structure == sb.structure
+
+
+# ============================================================
+# D1 EMA50 trend-override bias integration (Spec 2026-05-24)
+# ============================================================
+
+
+def _ohlcv_multitf_from_d1_closes(d1_closes: list[float]) -> dict:
+    """D1 close listesinden cok-TF OHLCV sozlugu kur.
+
+    D1 her bar O=H=L=C=close (zero-range); diger TF'ler her D1 close'unu
+    N kez tekrar eder. Bias EMA hesabi D1'e bakar; diger TF'ler enrichment
+    icin var ama bu testte icerik onemsiz.
+    """
+    d1_rows = [_candle(c, c, c, c) for c in d1_closes]
+    d1 = _df(d1_rows, start="2024-01-01", freq="1D")
+
+    h4_closes = [c for c in d1_closes for _ in range(6)]
+    h4 = _df([_candle(c, c, c, c) for c in h4_closes],
+             start="2024-01-01", freq="4h")
+    h1_closes = [c for c in d1_closes for _ in range(24)]
+    h1 = _df([_candle(c, c, c, c) for c in h1_closes],
+             start="2024-01-01", freq="1h")
+    m15_closes = [c for c in d1_closes for _ in range(96)]
+    m15 = _df([_candle(c, c, c, c) for c in m15_closes],
+              start="2024-01-01", freq="15min")
+    return {
+        TimeFrame.D1: d1, TimeFrame.H4: h4,
+        TimeFrame.H1: h1, TimeFrame.M15: m15,
+    }
+
+
+def test_analyze_d1_uptrend_returns_bullish_bias():
+    """D1 sentetik 150 bar uptrend -> htf_bias=BULLISH (EMA path)."""
+    d1_closes = [100.0 + i * 0.5 for i in range(150)]
+    ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
+    picture = analyze(ohlcv, SMCConfig())
+    assert picture.htf_bias == Bias.BULLISH
+
+
+def test_analyze_d1_downtrend_returns_bearish_bias():
+    """D1 sentetik 150 bar downtrend -> htf_bias=BEARISH (EMA path)."""
+    d1_closes = [100.0 - i * 0.3 for i in range(150)]
+    ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
+    picture = analyze(ohlcv, SMCConfig())
+    assert picture.htf_bias == Bias.BEARISH
+
+
+def test_analyze_short_d1_uses_fallback_path():
+    """D1 < 50 bar -> EMA bypass, structure/close-trend fallback."""
+    d1_closes = [100.0 + i * 0.2 for i in range(30)]
+    ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
+    picture = analyze(ohlcv, SMCConfig())
+    # 30 bar veride structure detect olabilir/olmaz; close-trend fallback ise
+    # +0.5%+ -> BULLISH. Net beklenti: != NEUTRAL.
+    assert picture.htf_bias != Bias.NEUTRAL
