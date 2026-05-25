@@ -38,17 +38,25 @@ def _make_break(direction: Direction, ts: datetime | None = None) -> StructureBr
 # ============================================================
 
 
+def _ema_on_cfg() -> SMCConfig:
+    """Helper: SMCConfig with EMA explicitly enabled (default is False
+    since 2026-05-25 validation rolled it back to opt-in)."""
+    cfg = SMCConfig()
+    cfg.bias_use_d1_ema_trend = True
+    return cfg
+
+
 def test_bias_ema_d1_close_above_returns_bullish():
     """tf=D1, 150 bar monotonic up → close > ema → BULLISH."""
     df = _make_df([100 + i * 0.5 for i in range(150)])
-    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, SMCConfig())
+    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, _ema_on_cfg())
     assert bias == Bias.BULLISH
 
 
 def test_bias_ema_d1_close_below_returns_bearish():
     """tf=D1, 150 bar monotonic down → close < ema → BEARISH."""
     df = _make_df([100 - i * 0.5 for i in range(150)])
-    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, SMCConfig())
+    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, _ema_on_cfg())
     assert bias == Bias.BEARISH
 
 
@@ -65,9 +73,10 @@ def test_bias_ema_default_config_none_uses_ema():
 
 
 def test_bias_ema_d1_close_equal_returns_bullish():
-    """tf=D1, 150 bar sabit close → close == ema → BULLISH (equality up)."""
+    """tf=D1, 150 bar sabit close → close == ema → BULLISH (equality up).
+    EMA path explicit (default 2026-05-25'ten beri opt-in)."""
     df = _make_df([100.0] * 150)
-    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, SMCConfig())
+    bias = _bias_from_snapshot(df, [], None, TimeFrame.D1, _ema_on_cfg())
     # Sabit seriede ewm = sabit; assert equality via approx
     closes = df["close"]
     ema = closes.ewm(span=50, adjust=False).mean().iloc[-1]
@@ -94,10 +103,11 @@ def test_bias_ema_disabled_falls_back_to_structure():
 
 
 def test_bias_ema_non_d1_tf_skips_ema():
-    """tf=H4, 150 bar uptrend + structure SHORT → structure (EMA bypass)."""
+    """tf=H4 + EMA on, 150 bar uptrend + structure SHORT → structure (EMA bypass).
+    EMA explicit on — gating TF gereği bypass'i kanıtlamak için."""
     df = _make_df([100 + i * 0.5 for i in range(150)])  # EMA D1-only → bypass
     br = _make_break(Direction.SHORT)
-    bias = _bias_from_snapshot(df, [br], None, TimeFrame.H4, SMCConfig())
+    bias = _bias_from_snapshot(df, [br], None, TimeFrame.H4, _ema_on_cfg())
     assert bias == Bias.BEARISH  # structure (EMA D1-only)
 
 

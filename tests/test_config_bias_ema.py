@@ -2,9 +2,13 @@
 from smc_engine.config import SMCConfig
 
 
-def test_smcconfig_has_bias_use_d1_ema_trend_default_true():
+def test_smcconfig_has_bias_use_d1_ema_trend_default_false():
+    """Default KAPALI — 2026-05-25 validation: P3 iyilesir ama P2 bozulur,
+    cross-window kazanim yok; opt-in feature flag.
+    Bkz: project_bias_fix_validation_2026_05_25.md
+    """
     cfg = SMCConfig()
-    assert cfg.bias_use_d1_ema_trend is True
+    assert cfg.bias_use_d1_ema_trend is False
 
 
 def test_smcconfig_has_bias_d1_ema_period_default_50():

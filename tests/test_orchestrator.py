@@ -574,27 +574,34 @@ def _ohlcv_multitf_from_d1_closes(d1_closes: list[float]) -> dict:
     }
 
 
+def _cfg_with_ema_on() -> SMCConfig:
+    """EMA explicit on — default 2026-05-25'ten beri opt-in."""
+    cfg = SMCConfig()
+    cfg.bias_use_d1_ema_trend = True
+    return cfg
+
+
 def test_analyze_d1_uptrend_returns_bullish_bias():
-    """D1 sentetik 150 bar uptrend -> htf_bias=BULLISH (EMA path)."""
+    """D1 sentetik 150 bar uptrend -> htf_bias=BULLISH (EMA path explicit on)."""
     d1_closes = [100.0 + i * 0.5 for i in range(150)]
     ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
-    picture = analyze(ohlcv, SMCConfig())
+    picture = analyze(ohlcv, _cfg_with_ema_on())
     assert picture.htf_bias == Bias.BULLISH
 
 
 def test_analyze_d1_downtrend_returns_bearish_bias():
-    """D1 sentetik 150 bar downtrend -> htf_bias=BEARISH (EMA path)."""
+    """D1 sentetik 150 bar downtrend -> htf_bias=BEARISH (EMA path explicit on)."""
     d1_closes = [100.0 - i * 0.3 for i in range(150)]
     ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
-    picture = analyze(ohlcv, SMCConfig())
+    picture = analyze(ohlcv, _cfg_with_ema_on())
     assert picture.htf_bias == Bias.BEARISH
 
 
 def test_analyze_short_d1_uses_fallback_path():
-    """D1 < 50 bar -> EMA bypass, structure/close-trend fallback."""
+    """D1 < 50 bar -> EMA bypass (guard), structure/close-trend fallback."""
     d1_closes = [100.0 + i * 0.2 for i in range(30)]
     ohlcv = _ohlcv_multitf_from_d1_closes(d1_closes)
-    picture = analyze(ohlcv, SMCConfig())
+    picture = analyze(ohlcv, _cfg_with_ema_on())
     # 30 bar veride structure detect olabilir/olmaz; close-trend fallback ise
     # +0.5%+ -> BULLISH. Net beklenti: != NEUTRAL.
     assert picture.htf_bias != Bias.NEUTRAL

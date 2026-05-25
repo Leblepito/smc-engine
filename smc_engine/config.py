@@ -105,7 +105,12 @@ class SMCConfig:
     atr_percentile_threshold: float = 0.80     # > p80 ise veto
     atr_regime_filter_enabled: bool = True     # production default ACIK
     # --- bias detection trend override (Spec 2026-05-24) ---
-    bias_use_d1_ema_trend: bool = True            # production default ACIK
+    # Default KAPALI: 2026-05-25 validation sweep gosterdi ki EMA path
+    # P3 ayisini duzeltirken P2 bogasini bozuyor (NEUTRAL durumunu
+    # kaldirmasi P2 setup sayisini 77->195'e patlatti, exp +1.96 -> -1.11).
+    # Opt-in: cfg.bias_use_d1_ema_trend=True ile explicit acilabilir.
+    # Bkz: project_bias_fix_validation_2026_05_25.md
+    bias_use_d1_ema_trend: bool = False
     bias_d1_ema_period: int = 50                  # D1 EMA periyodu
     # risk_guard confluence gate: en az kac sifir-olmayan confluence faktoru
     # gerekli (Setup.confluence_factor_count >= bu deger).
